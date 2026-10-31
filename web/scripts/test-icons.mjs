@@ -29,4 +29,13 @@ for (const name of names) {
     }
   }
 }
-console.log('All 14 generated icon masks match their SVGs; masked gaps and antialiasing are present.')
+const logoSvg = readFileSync(resolve(root, 'assets/logo-aquamax.svg'), 'utf8')
+const logoDefinition = header.match(/inline constexpr uint8_t logo_176_43\[176 \* 43\] = \{([\s\S]*?)\};/)
+assert.ok(logoDefinition, 'Missing AquaMax logo')
+const logoActual = [...logoDefinition[1].matchAll(/0x([0-9a-f]{2})/g)].map(match => Number.parseInt(match[1], 16))
+const logoRgba = render(logoSvg, 176)
+const logoExpected = []
+for (let offset = 3; offset < logoRgba.length; offset += 4) logoExpected.push(logoRgba[offset])
+assert.deepEqual(logoActual, logoExpected, 'Incorrect AquaMax logo mask')
+assert.ok(logoActual.some(value => value > 0 && value < 255), 'Missing logo antialiasing')
+console.log('All generated icon and logo masks match their SVGs; masked gaps and antialiasing are present.')

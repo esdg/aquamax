@@ -9,6 +9,10 @@
 #include <atomic>
 #include <cstdio>
 #include "config/pins.h"
+#if defined(AQUAMAX_TFT)
+#include "display/StartupModel.h"
+#include "display/TftGauge.h"
+#endif
 #include "hardware/TemperatureProbe.h"
 #include "sensors/SensorSnapshot.h"
 #include "sensors/TimeZone.h"
@@ -116,6 +120,12 @@ private:
     bool filesystemReady_ = false;
 #if defined(AQUAMAX_TFT)
     bool tftRendererReady_ = false;
+    StartupModel startup_;
+    uint32_t startupStartedMs_ = 0;
+    std::atomic<bool> displayWifiConnected_{false};
+    std::atomic<bool> displayWifiTimedOut_{false};
+    portMUX_TYPE setupDisplayMutex_ = portMUX_INITIALIZER_UNLOCKED;
+    TftSetupInfo setupDisplay_;
 #endif
     bool rebootPending_ = false;
     uint32_t rebootRequestedMs_ = 0;

@@ -4,8 +4,10 @@
 #include <Arduino.h>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include "config/pins.h"
 #include "display/GaugeModel.h"
+#include "display/StartupModel.h"
 #include "display/TftGauge.h"
 #include "generated/icons.h"
 
@@ -15,6 +17,7 @@ constexpr int screenSize = 240;
 constexpr int center = screenSize / 2;
 constexpr float pi = 3.14159265358979323846f;
 constexpr uint32_t frameIntervalMs = 200;
+constexpr uint32_t splashFrameIntervalMs = 80;
 constexpr uint16_t backgroundColor = 0x0841;
 constexpr uint16_t mutedColor = 0x8410;
 constexpr uint16_t dimColor = 0x39e7;
@@ -40,7 +43,7 @@ private:
 
 class DisplaySet {
 public:
-	DisplaySet() : base_(&displays_[0]), canvas_(&displays_[0]), temperature_({0.0f, 40.0f}) {
+	DisplaySet() : base_(&displays_[0]), canvas_(&displays_[0]), logo_(&displays_[1]), temperature_({0.0f, 40.0f}) {
 		auto busConfig = bus_.config();
 		busConfig.spi_host = SPI2_HOST;
 		busConfig.spi_mode = 0;
@@ -80,22 +83,83 @@ public:
 		delay(20);
 		digitalWrite(pins::tftReset, HIGH);
 		delay(120);
-		for (auto& display : displays_) if (!display.init()) return false;
+		for (auto& display : displays_) {
+			if (!display.init()) return false;
+			display.fillScreen(0);
+		}
 		base_.setPsram(true);
 		canvas_.setPsram(true);
+		logo_.setPsram(true);
 		base_.setColorDepth(16);
 		canvas_.setColorDepth(16);
-		if (!base_.createSprite(screenSize, screenSize) || !canvas_.createSprite(screenSize, screenSize)) return false;
-		drawStatic(false, false, icons::drop_off_32, "pH", "pH");
-		drawValue({}, "Not enabled");
-		canvas_.pushSprite(&displays_[1], 0, 0);
-		drawStatic(false, false, icons::three_drops_off_32, "ppm", "TDS");
-		drawValue({}, "Not enabled");
-		canvas_.pushSprite(&displays_[2], 0, 0);
+		logo_.setColorDepth(16);
+		if (!base_.createSprite(screenSize, screenSize) || !canvas_.createSprite(screenSize, screenSize) ||
+			!logo_.createSprite(176, 43)) return false;
 		return true;
 	}
 
+	void splash(uint32_t elapsedMs) {
+		if (mode_ != Mode::splash) {
+			previousSetup_ = {};
+			displays_[1].fillScreen(0);
+			mode_ = Mode::splash;
+			splashDrawn_ = false;
+		}
+		if (splashDrawn_ && elapsedMs - lastSplashMs_ < splashFrameIntervalMs) return;
+		lastSplashMs_ = elapsedMs;
+		const float phase = static_cast<float>(elapsedMs % StartupModel::animationCycleMs) / StartupModel::animationCycleMs;
+		const uint8_t brightness = static_cast<uint8_t>((1.0f - std::cos(2.0f * pi * phase)) * 127.5f);
+		for (int row = 0; row < 43; ++row) for (int column = 0; column < 176; ++column) {
+			const uint8_t value = static_cast<uint8_t>(icons::logo_176_43[row * 176 + column] * brightness / 255);
+			logo_.drawPixel(column, row, lgfx::color565(value, value, value));
+		}
+		logo_.pushSprite(&displays_[1], (screenSize - 176) / 2, (screenSize - 43) / 2);
+		splashDrawn_ = true;
+	}
+
+	void setup(const TftSetupInfo& setup) {
+		if (mode_ == Mode::setup && setup.active == previousSetup_.active && setup.failed == previousSetup_.failed &&
+			std::strcmp(setup.ssid, previousSetup_.ssid) == 0 && std::strcmp(setup.password, previousSetup_.password) == 0) return;
+		mode_ = Mode::setup;
+		previousSetup_ = setup;
+		canvas_.fillSprite(0);
+		canvas_.setTextDatum(textdatum_t::middle_center);
+		canvas_.setTextSize(1);
+		canvas_.setTextColor(0xffff, 0);
+		canvas_.setFont(&fonts::Font2);
+		canvas_.drawString("WI-FI SETUP", center, 53);
+		if (setup.active) {
+			canvas_.setFont(&fonts::Font0);
+			canvas_.drawString("NETWORK", center, 75);
+			canvas_.setFont(&fonts::Font2);
+			canvas_.drawString(setup.ssid, center, 92);
+			canvas_.setFont(&fonts::Font0);
+			canvas_.drawString("PASSWORD", center, 114);
+			canvas_.setFont(&fonts::Font2);
+			canvas_.drawString(setup.password, center, 131);
+			canvas_.setFont(&fonts::Font0);
+			canvas_.drawString("PORTAL", center, 153);
+			canvas_.drawString("http://192.168.4.1/setup", center, 169);
+		} else {
+			canvas_.setFont(&fonts::Font2);
+			canvas_.drawString(setup.failed ? "Setup AP failed" : "Starting setup...", center, 110);
+			if (setup.failed) canvas_.drawString("Restart device", center, 132);
+		}
+		canvas_.pushSprite(&displays_[1], 0, 0);
+	}
+
 	void update(const SensorSnapshot& snapshot, bool alert, uint32_t nowMs) {
+		if (mode_ != Mode::gauges) {
+			previousSetup_ = {};
+			mode_ = Mode::gauges;
+			drawn_ = false;
+			drawStatic(false, false, icons::drop_off_32, "pH", "pH");
+			drawValue({}, "Not enabled");
+			canvas_.pushSprite(&displays_[1], 0, 0);
+			drawStatic(false, false, icons::three_drops_off_32, "ppm", "TDS");
+			drawValue({}, "Not enabled");
+			canvas_.pushSprite(&displays_[2], 0, 0);
+		}
 		if (drawn_ && nowMs - lastFrameMs_ < frameIntervalMs) return;
 		lastFrameMs_ = nowMs;
 		const bool fresh = snapshot.temperature.hasValue && nowMs - snapshot.temperature.lastSeenMs < 3000;
@@ -112,6 +176,7 @@ public:
 	}
 
 private:
+	enum class Mode { none, splash, setup, gauges };
 	static int pointX(float position, int radius) { return center + static_cast<int>(std::cos((135.0f + 270.0f * position) * pi / 180.0f) * radius); }
 	static int pointY(float position, int radius) { return center + static_cast<int>(std::sin((135.0f + 270.0f * position) * pi / 180.0f) * radius); }
 
@@ -188,8 +253,13 @@ private:
 	lgfx::LGFX_Device displays_[3];
 	lgfx::LGFX_Sprite base_;
 	lgfx::LGFX_Sprite canvas_;
+	lgfx::LGFX_Sprite logo_;
 	GaugeModel temperature_;
+	TftSetupInfo previousSetup_;
+	Mode mode_ = Mode::none;
+	uint32_t lastSplashMs_ = 0;
 	uint32_t lastFrameMs_ = 0;
+	bool splashDrawn_ = false;
 	bool drawn_ = false;
 	bool previousValue_ = false;
 	bool previousAlert_ = false;
@@ -200,6 +270,8 @@ bool ready = false;
 }
 
 bool beginTftGauges() { ready = displays.begin(); return ready; }
+void showTftSplash(uint32_t elapsedMs) { if (ready) displays.splash(elapsedMs); }
+void showTftSetup(const TftSetupInfo& setup) { if (ready) displays.setup(setup); }
 void updateTftGauges(const SensorSnapshot& snapshot, bool temperatureAlert, uint32_t nowMs) {
 	if (ready) displays.update(snapshot, temperatureAlert, nowMs);
 }

@@ -29,6 +29,7 @@ for name in names:
         raise RuntimeError("Required icon is missing: " + str(path))
     fingerprint.update(name.encode("ascii"))
     fingerprint.update(path.read_bytes())
+fingerprint.update((root / "assets" / "logo-aquamax.svg").read_bytes())
 digest = fingerprint.hexdigest()
 existing = output.read_text(encoding="utf-8") if output.is_file() else ""
 match = re.search(r"^// source-sha256: ([0-9a-f]{64})$", existing, re.MULTILINE)

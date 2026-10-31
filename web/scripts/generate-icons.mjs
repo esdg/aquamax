@@ -37,6 +37,17 @@ for (const name of names) {
     output.push('};', '')
   }
 }
+const logoSvg = readFileSync(resolve(root, 'assets/logo-aquamax.svg'), 'utf8')
+const logo = PNG.sync.read(new Resvg(logoSvg, { fitTo: { mode: 'width', value: 176 } }).render().asPng())
+if (logo.width !== 176 || logo.height !== 43) throw new Error('Unexpected dimensions for AquaMax logo')
+const logoAlpha = []
+for (let offset = 3; offset < logo.data.length; offset += 4) logoAlpha.push(logo.data[offset])
+if (!logoAlpha.some(value => value > 0) || !logoAlpha.some(value => value === 0)) throw new Error('Invalid AquaMax logo mask')
+output.push('inline constexpr uint8_t logo_176_43[176 * 43] = {')
+for (let offset = 0; offset < logoAlpha.length; offset += 16) {
+  output.push(`    ${logoAlpha.slice(offset, offset + 16).map(value => `0x${value.toString(16).padStart(2, '0')}`).join(', ')},`)
+}
+output.push('};', '')
 output.push('} // namespace aquamax::icons', '')
 const destination = resolve(root, 'src/generated/icons.h')
 mkdirSync(resolve(root, 'src/generated'), { recursive: true })

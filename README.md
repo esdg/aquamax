@@ -202,6 +202,26 @@ specific breakout before testing. An unpowered backlight can make a correctly
 driven screen appear black. TFT SPI is write-only here, so renderer status
 does not prove a screen is connected or showing a correct image.
 
+After the displays initialize, the center pH screen fades the white AquaMax
+logo in and out while the temperature and TDS screens stay black. After one
+logo cycle, the gauges appear as soon as Wi-Fi connects. Startup does not wait
+for any probes. If a previously saved network is offline, the gauges appear
+when the Wi-Fi connection attempt times out after 20 seconds, and the existing
+setup access point becomes available.
+
+When no Wi-Fi is saved, the center display instead shows the temporary setup
+network, password and portal URL after one logo cycle; the other displays stay
+black. Once Wi-Fi connects, the gauges appear automatically, even if probes
+are disconnected. Sensor and dashboard processing continue throughout. If the
+setup access point cannot start, the center display reports the failure;
+restart the device to retry.
+The setup password is visible to anyone near the display while setup is active.
+
+On the three connected screens, verify the fade, black side screens, readable
+setup credentials and portal URL, and the automatic transition to gauges.
+Also check a missing temperature probe and an unavailable saved network. These
+startup screens and the pH and TDS displays have not yet been hardware-tested.
+
 For firmware-only changes, close the serial monitor and upload the firmware;
 this keeps the existing LittleFS files and NVS settings:
 
@@ -287,7 +307,8 @@ specific to the checked-in partition table; revisit them if it changes.
 Open the serial monitor at 115200 baud and press reset if the startup message
 was missed. On first boot, connect a phone or computer to the
 `AquaMax-Setup-...` network using the **temporary setup password printed in the
-serial monitor**. Visit `http://192.168.4.1/setup` and enter the name and
+serial monitor** (also shown on the center screen with `web_tft`). Visit
+`http://192.168.4.1/setup` and enter the name and
 password of a 2.4 GHz Wi-Fi network. Return the phone or computer to that same
 network and open the IP address printed in the monitor, or try
 `http://aquamax.local`. The setup access point closes 60 seconds after a

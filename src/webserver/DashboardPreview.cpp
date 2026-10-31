@@ -115,6 +115,11 @@ bool allowedOrigin(const String& origin) {
 }
 
 void DashboardPreview::begin() {
+#if defined(AQUAMAX_TFT)
+    tftRendererReady_ = beginTftGauges();
+    if (tftRendererReady_) showTftSplash(0);
+    else Serial.println("TFT initialization failed; dashboard remains available.");
+#endif
     alertSettingsError_ = alertSettingsStore_.load(alertConfig_) == AlertSettingsLoad::error;
     temperatureCalibrationError_ = temperatureCalibrationStore_.load(temperatureCalibration_) == TemperatureCalibrationLoad::error;
     temperatureOffset_.store(temperatureCalibration_.offsetC);
@@ -212,11 +217,6 @@ void DashboardPreview::begin() {
     socket_.begin();
     socket_.enableHeartbeat(15000, 3000, 2);
 
-#if defined(AQUAMAX_TFT)
-    tftRendererReady_ = beginTftGauges();
-    if (!tftRendererReady_) Serial.println("TFT initialization failed; dashboard remains available.");
-#endif
-
     Preferences storage;
     WifiCredentials credentials{};
     bool saved = false;
@@ -238,6 +238,10 @@ void DashboardPreview::begin() {
     if (xTaskCreatePinnedToCore(networkTask, "aquamax-network", 8192, this, 1, nullptr, 0) != pdPASS) {
         Serial.println("Unable to start network task; dashboard unavailable.");
     }
+#if defined(AQUAMAX_TFT)
+    startupStartedMs_ = millis();
+    startup_.begin(startupStartedMs_, saved && credentials.ssid[0] != '\0');
+#endif
 }
 
 void DashboardPreview::startSetup() {
@@ -251,9 +255,24 @@ void DashboardPreview::startSetup() {
              static_cast<unsigned>(esp_random()), static_cast<unsigned>(esp_random()), static_cast<unsigned>(esp_random()));
     setupToken_ = token;
     if (!WiFi.softAP(name, password)) {
+#if defined(AQUAMAX_TFT)
+        portENTER_CRITICAL(&setupDisplayMutex_);
+        setupDisplay_ = {};
+        setupDisplay_.failed = true;
+        portEXIT_CRITICAL(&setupDisplayMutex_);
+#endif
         Serial.println("Unable to start Wi-Fi setup access point.");
         return;
     }
+#if defined(AQUAMAX_TFT)
+    TftSetupInfo setup;
+    setup.active = true;
+    std::snprintf(setup.ssid, sizeof(setup.ssid), "%s", name);
+    std::snprintf(setup.password, sizeof(setup.password), "%s", password);
+    portENTER_CRITICAL(&setupDisplayMutex_);
+    setupDisplay_ = setup;
+    portEXIT_CRITICAL(&setupDisplayMutex_);
+#endif
     setupActive_ = true;
     dns_.start(53, "*", WiFi.softAPIP());
     Serial.printf("Setup Wi-Fi: %s\nSetup password: %s\nOpen http://192.168.4.1/setup\n", name, password);
@@ -952,7 +971,18 @@ void DashboardPreview::update(uint32_t now) {
     snapshot_ = snapshot;
     portEXIT_CRITICAL(&snapshotMutex_);
 #if defined(AQUAMAX_TFT)
-    updateTftGauges(snapshot, displayTemperatureAlert_.load(), now);
+    const StartupScreen screen = startup_.update(now, displayWifiConnected_.load(), displayWifiTimedOut_.load());
+    if (screen == StartupScreen::splash) {
+        showTftSplash(now - startupStartedMs_);
+    } else if (screen == StartupScreen::setup) {
+        TftSetupInfo setup;
+        portENTER_CRITICAL(&setupDisplayMutex_);
+        setup = setupDisplay_;
+        portEXIT_CRITICAL(&setupDisplayMutex_);
+        showTftSetup(setup);
+    } else {
+        updateTftGauges(snapshot, displayTemperatureAlert_.load(), now);
+    }
 #endif
     if (now - lastSensorReportMs_ >= 5000) {
         lastSensorReportMs_ = now;
@@ -1037,8 +1067,14 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         MDNS.end();
         Serial.println("Wi-Fi disconnected; reconnecting.");
     }
+#if defined(AQUAMAX_TFT)
+    displayWifiConnected_.store(online);
+#endif
     if (!online && attempting_ && now - attemptStarted_ >= connectionTimeoutMs) {
         attempting_ = false;
+#if defined(AQUAMAX_TFT)
+        displayWifiTimedOut_.store(true);
+#endif
         const wl_status_t timeoutStatus = WiFi.status();
         if (pendingSsid_.length()) WiFi.disconnect(false, false);
         pendingSsid_ = "";
@@ -1053,6 +1089,11 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         WiFi.softAPdisconnect(true);
         setupActive_ = false;
         setupToken_ = "";
+    #if defined(AQUAMAX_TFT)
+        portENTER_CRITICAL(&setupDisplayMutex_);
+        setupDisplay_ = {};
+        portEXIT_CRITICAL(&setupDisplayMutex_);
+    #endif
     }
 }
 
