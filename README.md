@@ -4,8 +4,9 @@ AquaMax is being developed as a standalone ESP32-S3 aquarium monitor. This is
 an **in-progress implementation**, not yet a complete water-quality monitor.
 Phase 1 supports a temperature-only hardware setup; analog sensor integration
 and physical verification remain unfinished. The Wi-Fi dashboard includes
-temperature history and a temperature calibration workflow. Display rendering,
-analog calibration and alerts remain unfinished.
+temperature history, a temperature calibration workflow, local alerts and a
+bounded event journal. Display rendering and analog calibration remain
+unfinished; external notification integrations are not yet implemented.
 
 ## Current status
 
@@ -35,9 +36,16 @@ analog calibration and alerts remain unfinished.
   adjustment and probe status. Its calibration record has native persistence
   tests; an actual reference calibration and physical NVS persistence still
   need verification with a trusted thermometer.
+- Temperature alerts support optional thresholds, hysteresis, debounce,
+  repeat limiting and a separate probe-fault alert. Thresholds default to off
+  until the owner selects a suitable range. A 100-entry journal stores notes
+  and alert transitions; its timestamps are omitted when time is unknown.
 - Versioned, checksummed settings storage in NVS with native fake-storage tests.
-  Timezone selection persists across reboot on the board; other settings do not
-  yet have a dashboard editing interface or physical persistence tests.
+  Timezone and temperature alert settings persist across reboot on the board.
+- Settings and System pages provide timezone selection, diagnostics, a
+  versioned configuration backup, confirmed restore, reboot and dual-slot OTA.
+  Configuration round-trip, a valid OTA update, rejection of a truncated image
+  and reboot were tested on the board. See the limitations below.
 - No physical I/O is initialized in the simulation build. The TDS scheduler is
   not connected to a GPIO and must not be used as a hardware safety mechanism.
 
@@ -134,8 +142,8 @@ gauge uses a provisional 0-40 C display range, not configured alert thresholds.
 pH and TDS are disabled, not simulated. The dashboard receives snapshots via
 the read-only WebSocket on port 81, reconnecting automatically and falling back
 to `/api/state` polling every two seconds when needed. HTTP and WebSocket
-servicing run on a separate task from sensor sampling. Alerts and the analog
-calibration wizards are not yet implemented. Phase 1 analog integration and
+servicing run on a separate task from sensor sampling. External notifications
+and the analog calibration wizards are not yet implemented. Phase 1 analog integration and
 the physical display phase remain incomplete.
 
 NTP synchronizes asynchronously after Wi-Fi connects. The default timezone is
@@ -180,6 +188,40 @@ npm run build --prefix web
 The uploader defaults to `http://aquamax.local`; use `--url http://DEVICE_IP`
 when mDNS is unavailable. It requires the current firmware's asset endpoint.
 Asset updates and the dashboard use unauthenticated HTTP on a trusted LAN.
+
+## Settings and system
+
+The System page reports live memory, network and storage diagnostics. A
+configuration backup contains the timezone, temperature calibration and
+temperature alert settings. It does not contain Wi-Fi credentials, history,
+journal entries or dashboard files; keep a separate LittleFS backup for those.
+Restore requires confirmation and validates the entire file before writing.
+The three settings records are written separately: a storage or power failure
+can leave a partial restore, which must be checked and retried. Restoring a
+calibration to a different probe can give misleading readings; verify it with a
+trusted thermometer. Restoring alert settings can enable saved thresholds.
+
+Restart and OTA first attempt to flush buffered history and refuse to proceed
+if that flush fails. OTA accepts an ESP32-S3 application `.bin` up to the
+inactive 3 MB slot, checks the image using the ESP-IDF OTA APIs and leaves
+LittleFS and NVS alone. It does not update dashboard assets. Use only a build
+made for this device and partition layout. Image validation is not firmware
+authentication, and automatic rollback after a valid but broken application
+boots is not implemented. Keep serial access available for recovery.
+
+There is no password, TLS or firmware signature check on these endpoints.
+Same-origin checks are not authentication: anyone on the trusted LAN can
+change settings or install firmware. Never expose the device to an untrusted
+network or the Internet.
+
+The dashboard supplies an install manifest and a service worker for secure
+origins. Browsers generally do not consider `http://aquamax.local` secure, so
+installation, offline caching and browser notifications may be unavailable
+there. The device does not currently serve HTTPS. Where supported, only static
+dashboard assets are cached; live readings and API responses are never cached.
+The current Settings page does not yet configure device name, units, theme,
+display settings, external export or network credentials; Wi-Fi provisioning
+uses the setup access point described below.
 
 For a first installation only, `uploadfs` can initialize the asset filesystem.
 **It replaces the entire LittleFS partition, including all history and other
@@ -287,6 +329,30 @@ until the analog channels and actual modules are integrated and verified.
 Native-tested pH slope and temperature-compensation calculations are
 foundations only; they do not enable the ADC or generate measurements. Probe
 age and slope trends for analog probes are not yet available.
+
+## Alerts and journal
+
+Temperature threshold alerts are disabled by default; configure a suitable
+range for the actual aquarium before enabling them. Profile choices are only
+starting points, not guarantees of suitability. Probe-fault alerts are enabled
+by default. Hysteresis and debounce reduce chatter, and repeats are limited by
+the configured interval. Missing or disabled readings do not generate numeric
+threshold alerts; a fault recovers only after valid readings return. Alert
+settings are stored in a separate checksummed NVS record. A storage error is
+shown rather than silently enabling default threshold values.
+
+The journal retains the most recent 100 entries, including notes and alert
+transitions. Entries with unknown device time have no timestamp; they are not
+plotted on the history chart. Deleting a journal entry does not delete history
+or dashboard assets. Clearing measurement history does not clear the journal.
+Tips currently cover temperature alerts, probe faults and dated temperature
+calibration only; no analog readings or advice are fabricated.
+
+Browser notifications require explicit permission, a browser-supported secure
+origin and an open dashboard; plain `http://aquamax.local` is generally not a
+secure origin. WhatsApp, Telegram, webhook and MQTT delivery are **not yet
+implemented**, and no external alert delivery should be assumed. The local
+dashboard is not a substitute for an independent aquarium safety system.
 
 ## Phase 2: Display foundations
 

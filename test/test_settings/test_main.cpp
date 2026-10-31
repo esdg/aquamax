@@ -4,6 +4,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsStore.h"
 #include "settings/TemperatureCalibrationStore.h"
+#include "settings/AlertSettingsStore.h"
 
 void setUp() { Preferences::reset(); }
 void tearDown() {}
@@ -77,11 +78,34 @@ void test_temperature_calibration_persists_and_rejects_corruption() {
     TEST_ASSERT_FALSE(store.save({0, 0, false}));
 }
 
+void test_alert_settings_roundtrip_and_storage_errors() {
+    aquamax::AlertSettingsStore store;
+    aquamax::AlertConfig config;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::AlertSettingsLoad::defaults), static_cast<int>(store.load(config)));
+    TEST_ASSERT_FALSE(config.thresholdsEnabled);
+    config.thresholdsEnabled = true;
+    config.minimum = 22.0f;
+    config.maximum = 28.0f;
+    TEST_ASSERT_TRUE(store.save(config));
+    aquamax::AlertConfig loaded;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::AlertSettingsLoad::loaded), static_cast<int>(store.load(loaded)));
+    TEST_ASSERT_TRUE(loaded.thresholdsEnabled);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 22.0f, loaded.minimum);
+    Preferences::bytes[2] ^= 1u;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::AlertSettingsLoad::error), static_cast<int>(store.load(loaded)));
+    TEST_ASSERT_FALSE(loaded.thresholdsEnabled);
+    config.maximum = config.minimum;
+    TEST_ASSERT_FALSE(store.save(config));
+    Preferences::failWrite = true;
+    TEST_ASSERT_FALSE(store.save({}));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_settings_validation);
     RUN_TEST(test_settings_store_defaults_roundtrip_and_corruption);
     RUN_TEST(test_settings_store_rejects_bad_data_and_storage_errors);
     RUN_TEST(test_temperature_calibration_persists_and_rejects_corruption);
+    RUN_TEST(test_alert_settings_roundtrip_and_storage_errors);
     return UNITY_END();
 }

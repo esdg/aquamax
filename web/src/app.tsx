@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import thermometer from '../../assets/icons/thermometer.svg?raw'
 import thermometerOff from '../../assets/icons/thermometer-off.svg?raw'
 import drop from '../../assets/icons/drop.svg?raw'
@@ -9,6 +9,9 @@ import { startLiveFeed } from './live'
 import type { ProbeState, Snapshot } from './live'
 import { History } from './History'
 import { Calibration } from './Calibration'
+import { Alerts } from './Alerts'
+import { Journal } from './Journal'
+import { Settings, System } from './System'
 import './app.css'
 
 const stateLabels: Record<ProbeState, string> = {
@@ -51,7 +54,13 @@ export function App() {
   const [updated, setUpdated] = useState<string | null>(null)
   const [timezonePending, setTimezonePending] = useState<string | null>(null)
   const [timezoneError, setTimezoneError] = useState(false)
-  const [page, setPage] = useState<'home' | 'history' | 'calibration'>('home')
+  const [page, setPage] = useState<'home' | 'history' | 'calibration' | 'alerts' | 'journal' | 'settings' | 'system'>('home')
+  const [browserEnabled, setBrowserEnabled] = useState(() => {
+    try { return window.isSecureContext && typeof Notification !== 'undefined' && Notification.permission === 'granted' && localStorage.getItem('aquamax-notifications') === 'enabled' } catch { return false }
+  })
+  const browserEnabledRef = useRef(browserEnabled)
+  browserEnabledRef.current = browserEnabled
+  const lastAlertSequence = useRef<number | null>(null)
 
   useEffect(() => {
     return startLiveFeed({
@@ -64,6 +73,15 @@ export function App() {
       setTimer: (callback, delay) => window.setTimeout(callback, delay),
       clearTimer: timer => window.clearTimeout(timer),
       onSnapshot: data => {
+        if (data.alerts) {
+          const previous = lastAlertSequence.current
+          const event = data.alerts.event
+          if (previous !== null && data.alerts.sequence > previous && browserEnabledRef.current && event !== 'none') {
+            const messages = { low: 'Temperature below minimum', high: 'Temperature above maximum', probe_fault: 'Temperature probe fault', recovered: 'Temperature alert recovered' }
+            try { new Notification('AquaMax', { body: messages[event], tag: `aquamax-${data.alerts.sequence}` }) } catch { }
+          }
+          lastAlertSequence.current = data.alerts.sequence
+        }
         setSnapshot(data)
         setStatus('online')
         setUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
@@ -71,6 +89,11 @@ export function App() {
       onOffline: () => { setSnapshot(null); setStatus('offline') },
     })
   }, [])
+
+  const changeBrowserNotifications = (enabled: boolean) => {
+    setBrowserEnabled(enabled)
+    try { localStorage.setItem('aquamax-notifications', enabled ? 'enabled' : 'disabled') } catch { }
+  }
 
   const changeTimezone = async (timezone: string) => {
     setTimezonePending(timezone)
@@ -93,10 +116,12 @@ export function App() {
   return (
     <div class="shell">
       <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><span>AquaMax<small>WATER MONITOR</small></span></div><div class="connection" role="status"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} />{status === 'loading' ? 'Connecting' : status === 'online' ? 'Device online' : 'Device offline'}</div></header>
-      <nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button><button type="button" aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}>History</button><button type="button" aria-current={page === 'calibration' ? 'page' : undefined} onClick={() => setPage('calibration')}>Calibration</button></nav>
+      <nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button><button type="button" aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}>History</button><button type="button" aria-current={page === 'calibration' ? 'page' : undefined} onClick={() => setPage('calibration')}>Calibration</button><button type="button" aria-current={page === 'alerts' ? 'page' : undefined} onClick={() => setPage('alerts')}>Alerts</button><button type="button" aria-current={page === 'journal' ? 'page' : undefined} onClick={() => setPage('journal')}>Journal</button><button type="button" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button><button type="button" aria-current={page === 'system' ? 'page' : undefined} onClick={() => setPage('system')}>System</button></nav>
       <main class="content">
         {page === 'home' ? <>
         <div class="page-heading"><div><div class="eyebrow">AQUARIUM / OVERVIEW</div><h1>Water conditions</h1><p>Live readings from your aquarium.</p></div><div class="update-time"><span>LAST UPDATE</span><strong>{status === 'online' ? updated : '--:--:--'}</strong></div></div>
+        {snapshot?.alerts?.temperature && snapshot.alerts.temperature !== 'normal' && <div class="active-alert" role="alert"><strong>Temperature alert</strong><span>{snapshot.alerts.temperature === 'low' ? 'Below minimum' : snapshot.alerts.temperature === 'high' ? 'Above maximum' : 'Probe fault'}</span><button type="button" onClick={() => setPage('alerts')}>View alerts</button></div>}
+        {snapshot?.alerts?.settingsError && <p class="calibration-error" role="alert">Alert settings could not be loaded. Temperature thresholds are disabled.</p>}
         <div class="section-label"><h2>Live measurements</h2><span>DS18B20 + analog probes</span></div>
         <div class="metrics">
           <Gauge name="Temperature" unit="°C" value={snapshot?.temperature.valueC ?? null} state={snapshot?.temperature.state ?? null} icon={thermometer} mutedIcon={thermometerOff} maximum={40} />
@@ -104,7 +129,7 @@ export function App() {
           <Gauge name="TDS" unit="ppm" value={snapshot?.tds.value ?? null} state={snapshot?.tds.state ?? null} icon={drops} mutedIcon={dropsOff} maximum={1000} />
         </div>
         <div class="device-row"><div><span class="device-label">CONNECTION</span><strong>{status === 'online' ? snapshot?.wifi === 'connected' ? 'Wi-Fi connected' : 'Setup network' : 'Waiting for device'}</strong></div><div><span class="device-label">DEVICE UPTIME</span><strong>{snapshot ? `${Math.floor(snapshot.uptimeSeconds / 60)} min` : '--'}</strong></div><div><span class="device-label">DEVICE TIME</span><strong>{snapshot?.time?.synchronized ? snapshot.time.local ?? 'Synchronized' : 'Not synchronized'}</strong></div><div><label class="device-label" for="timezone">TIMEZONE</label><select id="timezone" value={timezonePending ?? snapshot?.time?.timezone ?? 'Europe/Paris'} disabled={status !== 'online' || !snapshot?.time?.timezone || timezonePending !== null} onChange={event => void changeTimezone(event.currentTarget.value)}>{timezones.map(timezone => <option value={timezone} key={timezone}>{timezone.replaceAll('_', ' ')}</option>)}</select>{timezoneError && <span class="timezone-error" role="alert">Could not save timezone</span>}</div></div>
-        </> : page === 'history' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : <Calibration timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} />}
+        </> : page === 'history' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'calibration' ? <Calibration timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'alerts' ? <Alerts live={snapshot?.alerts} browserEnabled={browserEnabled} onBrowserChange={changeBrowserNotifications} /> : page === 'journal' ? <Journal timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'settings' ? <Settings timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} pending={timezonePending} error={timezoneError} online={status === 'online'} timezones={timezones} onTimezone={zone => void changeTimezone(zone)} /> : <System />}
       </main>
       <footer>AquaMax <span>LOCAL MONITORING</span></footer>
     </div>

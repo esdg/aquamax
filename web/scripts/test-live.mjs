@@ -61,6 +61,11 @@ test('rejects malformed or non-finite readings', () => {
   assert.equal(isSnapshot(snapshot(24)), true)
   assert.equal(isSnapshot(snapshot(NaN)), false)
   assert.equal(isSnapshot({ ...snapshot(24), tds: { state: 'unknown', value: 3 } }), false)
+  const alerts = { temperature: 'normal', event: 'none', sequence: 0, settingsError: false }
+  assert.equal(isSnapshot({ ...snapshot(24), alerts }), true)
+  assert.equal(isSnapshot({ ...snapshot(24), alerts: { ...alerts, sequence: NaN } }), false)
+  assert.equal(isSnapshot({ ...snapshot(24), alerts: { ...alerts, event: 'unexpected' } }), false)
+  assert.equal(isSnapshot({ ...snapshot(24), alerts: { ...alerts, settingsError: 'false' } }), false)
 })
 
 test('stream wins over a late HTTP response and falls back on disconnect', async () => {

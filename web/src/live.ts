@@ -1,4 +1,5 @@
 export type ProbeState = 'connected' | 'disconnected' | 'unstable' | 'out_of_range' | 'disabled'
+export type AlertStatus = { temperature: 'normal' | 'low' | 'high' | 'probe_fault'; event: 'none' | 'low' | 'high' | 'probe_fault' | 'recovered'; sequence: number; settingsError: boolean }
 export type Snapshot = {
   temperature: { state: ProbeState; valueC: number | null }
   ph: { state: ProbeState; value: number | null }
@@ -6,6 +7,7 @@ export type Snapshot = {
   wifi: 'connected' | 'disconnected'
   uptimeSeconds: number
   time?: { synchronized: boolean; unixSeconds: number | null; local?: string | null; timezone?: string }
+  alerts?: AlertStatus
 }
 
 type Socket = Pick<WebSocket, 'close' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'>
@@ -29,6 +31,11 @@ export function isSnapshot(value: unknown): value is Snapshot {
     return typeof channel.state === 'string' && states.includes(channel.state) &&
       (channel[key] === null || (typeof channel[key] === 'number' && Number.isFinite(channel[key])))
   }
+  const alerts = data.alerts as Record<string, unknown> | undefined
+  if (alerts !== undefined && (!alerts || typeof alerts !== 'object' ||
+    typeof alerts.temperature !== 'string' || !['normal', 'low', 'high', 'probe_fault'].includes(alerts.temperature) ||
+    typeof alerts.event !== 'string' || !['none', 'low', 'high', 'probe_fault', 'recovered'].includes(alerts.event) ||
+    typeof alerts.sequence !== 'number' || !Number.isSafeInteger(alerts.sequence) || alerts.sequence < 0 || typeof alerts.settingsError !== 'boolean')) return false
   return reading(data.temperature, 'valueC') && reading(data.ph, 'value') && reading(data.tds, 'value') &&
     (data.wifi === 'connected' || data.wifi === 'disconnected') &&
     typeof data.uptimeSeconds === 'number' && Number.isFinite(data.uptimeSeconds)

@@ -4,10 +4,12 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 #include <esp_sntp.h>
 #include <esp_system.h>
 #include <stdlib.h>
 #include <cmath>
+#include <cstring>
 #include <time.h>
 #include <unistd.h>
 #include "config/pins.h"
@@ -24,6 +26,9 @@ constexpr uint32_t broadcastIntervalMs = 1000;
 constexpr uint32_t historySampleMs = 10000;
 constexpr uint32_t historyFlushMs = 300000;
 constexpr uint32_t calibrationWriteIntervalMs = 5000;
+constexpr uint32_t alertWriteIntervalMs = 5000;
+constexpr uint32_t journalWriteIntervalMs = 1000;
+constexpr uint32_t systemWriteIntervalMs = 5000;
 std::atomic<bool> networkTimeReceived{false};
 
 struct WifiCredentials {
@@ -49,6 +54,58 @@ const char* stateName(ProbeState state) {
     return "unknown";
 }
 
+const char* alertStateName(AlertState state) {
+    switch (state) {
+        case AlertState::normal: return "normal";
+        case AlertState::low: return "low";
+        case AlertState::high: return "high";
+        case AlertState::probeFault: return "probe_fault";
+    }
+    return "normal";
+}
+
+const char* alertEventName(AlertEvent event) {
+    switch (event) {
+        case AlertEvent::none: return "none";
+        case AlertEvent::low: return "low";
+        case AlertEvent::high: return "high";
+        case AlertEvent::probeFault: return "probe_fault";
+        case AlertEvent::recovered: return "recovered";
+    }
+    return "none";
+}
+
+bool parseFloat(const String& text, float& value) {
+    if (!text.length()) return false;
+    char* end = nullptr;
+    value = strtof(text.c_str(), &end);
+    return end && *end == '\0' && std::isfinite(value);
+}
+
+bool parseSeconds(const String& text, uint32_t maximumSeconds, uint32_t& milliseconds) {
+    if (!text.length()) return false;
+    for (unsigned index = 0; index < text.length(); ++index) if (text[index] < '0' || text[index] > '9') return false;
+    char* end = nullptr;
+    const unsigned long seconds = strtoul(text.c_str(), &end, 10);
+    if (!end || *end != '\0' || seconds > maximumSeconds) return false;
+    milliseconds = static_cast<uint32_t>(seconds) * 1000;
+    return true;
+}
+
+String jsonText(const char* text) {
+    String escaped;
+    escaped += '"';
+    for (const char* character = text; *character; ++character) {
+        if (*character == '\n') { escaped += F("\\n"); continue; }
+        if (*character == '\r') { escaped += F("\\r"); continue; }
+        if (*character == '\t') { escaped += F("\\t"); continue; }
+        if (*character == '"' || *character == '\\') escaped += '\\';
+        escaped += *character;
+    }
+    escaped += '"';
+    return escaped;
+}
+
 bool allowedOrigin(const String& origin) {
     return origin.equalsIgnoreCase("http://aquamax.local") ||
            origin == String("http://") + WiFi.localIP().toString() ||
@@ -57,6 +114,7 @@ bool allowedOrigin(const String& origin) {
 }
 
 void DashboardPreview::begin() {
+    alertSettingsError_ = alertSettingsStore_.load(alertConfig_) == AlertSettingsLoad::error;
     temperatureCalibrationError_ = temperatureCalibrationStore_.load(temperatureCalibration_) == TemperatureCalibrationLoad::error;
     temperatureOffset_.store(temperatureCalibration_.offsetC);
     sntp_set_time_sync_notification_cb([](struct timeval*) { networkTimeReceived.store(true); });
@@ -70,6 +128,7 @@ void DashboardPreview::begin() {
     setenv("TZ", timezone_->rule, 1);
     tzset();
     filesystemReady_ = LittleFS.begin(false, "/littlefs", 10, "littlefs");
+    journalReady_ = filesystemReady_ && eventJournal_.begin();
     if (!filesystemReady_) Serial.println("Dashboard filesystem unavailable; upload the dashboard filesystem.");
     WiFi.persistent(false);
     WiFi.mode(WIFI_AP_STA);
@@ -80,6 +139,10 @@ void DashboardPreview::begin() {
     server_.on("/", HTTP_GET, [this] { serveAsset("/index.html", "text/html"); });
     server_.on("/app.js", HTTP_GET, [this] { serveAsset("/app.js", "application/javascript"); });
     server_.on("/app.css", HTTP_GET, [this] { serveAsset("/app.css", "text/css"); });
+    server_.on("/manifest.webmanifest", HTTP_GET, [this] { serveAsset("/manifest.webmanifest", "application/manifest+json"); });
+    server_.on("/service-worker.js", HTTP_GET, [this] { serveAsset("/service-worker.js", "application/javascript"); });
+    server_.on("/icon-192.png", HTTP_GET, [this] { serveAsset("/icon-192.png", "image/png"); });
+    server_.on("/icon-512.png", HTTP_GET, [this] { serveAsset("/icon-512.png", "image/png"); });
     server_.on("/api/state", HTTP_GET, [this] { serveState(); });
     server_.on("/api/timezone", HTTP_POST, [this] { setTimezone(); });
     server_.on("/api/history", HTTP_GET, [this] { serveHistory(false); });
@@ -88,6 +151,26 @@ void DashboardPreview::begin() {
     server_.on("/api/history", HTTP_DELETE, [this] { clearHistory(); });
     server_.on("/api/calibration", HTTP_GET, [this] { serveCalibration(); });
     server_.on("/api/calibration/temp", HTTP_POST, [this] { changeTemperatureCalibration(); });
+    server_.on("/api/alerts", HTTP_GET, [this] { serveAlerts(); });
+    server_.on("/api/alerts", HTTP_POST, [this] { changeAlerts(); });
+    server_.on("/api/events", HTTP_GET, [this] { serveEvents(); });
+    server_.on("/api/events", HTTP_POST, [this] { addEvent(); });
+    server_.on("/api/events", HTTP_DELETE, [this] { deleteEvent(); });
+    server_.on("/api/tips", HTTP_GET, [this] { serveTips(); });
+    server_.on("/api/system", HTTP_GET, [this] { serveSystem(); });
+    server_.on("/api/system/config", HTTP_GET, [this] { serveConfiguration(); });
+    server_.on("/api/system/config", HTTP_POST, [this] { restoreConfiguration(); });
+    server_.on("/api/system/reboot", HTTP_POST, [this] { reboot(); });
+    server_.on("/api/system/ota", HTTP_POST, [this] {
+        if (!allowedOrigin(server_.header("Origin"))) server_.send(403, "text/plain", "Request rejected");
+        else if (!firmwareUploadSucceeded_) server_.send(400, "text/plain", "Firmware update failed");
+        else {
+            server_.send(200, "application/json", "{\"ok\":true}");
+            rebootPending_ = true;
+            rebootRequestedMs_ = millis();
+        }
+        firmwareUploadSucceeded_ = false;
+    }, [this] { uploadFirmware(); });
     server_.on("/api/dashboard-assets", HTTP_POST, [this] {
         if (!allowedOrigin(server_.header("Origin"))) server_.send(403, "text/plain", "Request rejected");
         else server_.send(assetUploadSucceeded_ ? 200 : 400, "application/json", assetUploadSucceeded_ ? "{\"ok\":true}" : "{\"ok\":false}");
@@ -256,7 +339,9 @@ void DashboardPreview::uploadAsset() {
         assetUploadName_ = upload.filename;
         if (!filesystemReady_ || !allowedOrigin(server_.header("Origin")) ||
             server_.clientContentLength() <= 0 || server_.clientContentLength() > static_cast<int>(maxAssetBytes + 4096) ||
-            (assetUploadName_ != "index.html.gz" && assetUploadName_ != "app.js.gz" && assetUploadName_ != "app.css.gz")) return;
+            (assetUploadName_ != "index.html.gz" && assetUploadName_ != "app.js.gz" && assetUploadName_ != "app.css.gz" &&
+             assetUploadName_ != "manifest.webmanifest.gz" && assetUploadName_ != "service-worker.js.gz" &&
+             assetUploadName_ != "icon-192.png.gz" && assetUploadName_ != "icon-512.png.gz")) return;
         assetUpload_ = std::fopen(temporary, "w+b");
     } else if (upload.status == UPLOAD_FILE_WRITE && assetUpload_) {
         assetUploadBytes_ += upload.currentSize;
@@ -347,6 +432,15 @@ String DashboardPreview::stateJson() {
     response += timezone_->name;
     response += '"';
     response += '}';
+    response += F(",\"alerts\":{\"temperature\":\"");
+    response += alertStateName(temperatureAlertState_);
+    response += F("\",\"event\":\"");
+    response += alertEventName(lastAlertEvent_);
+    response += F("\",\"sequence\":");
+    response += String(alertSequence_);
+    response += F(",\"settingsError\":");
+    response += alertSettingsError_ ? "true" : "false";
+    response += '}';
     response += '}';
     return response;
 }
@@ -354,6 +448,294 @@ String DashboardPreview::stateJson() {
 void DashboardPreview::serveState() {
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(200, "application/json", stateJson());
+}
+
+void DashboardPreview::serveSystem() {
+    String response = F("{\"uptimeSeconds\":");
+    response += String(millis() / 1000);
+    response += F(",\"freeHeapBytes\":"); response += String(ESP.getFreeHeap());
+    response += F(",\"freePsramBytes\":"); response += String(ESP.getFreePsram());
+    response += F(",\"psramBytes\":"); response += String(ESP.getPsramSize());
+    response += F(",\"flashBytes\":"); response += String(ESP.getFlashChipSize());
+    response += F(",\"filesystemReady\":"); response += filesystemReady_ ? "true" : "false";
+    response += F(",\"filesystemUsedBytes\":"); response += String(filesystemReady_ ? LittleFS.usedBytes() : 0);
+    response += F(",\"filesystemTotalBytes\":"); response += String(filesystemReady_ ? LittleFS.totalBytes() : 0);
+    response += F(",\"journalReady\":"); response += journalReady_ ? "true" : "false";
+    response += F(",\"wifiConnected\":"); response += WiFi.status() == WL_CONNECTED ? "true" : "false";
+    response += F(",\"wifiRssi\":"); response += WiFi.status() == WL_CONNECTED ? String(WiFi.RSSI()) : String("null");
+    response += F(",\"ipAddress\":"); response += WiFi.status() == WL_CONNECTED ? jsonText(WiFi.localIP().toString().c_str()) : String("null");
+    response += '}';
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::serveConfiguration() {
+    if (alertSettingsError_ || temperatureCalibrationError_) { server_.send(503, "text/plain", "Configuration storage unavailable"); return; }
+    String response = F("{\"version\":1,\"timezone\":");
+    response += jsonText(timezone_->name);
+    response += F(",\"alerts\":{\"thresholdsEnabled\":"); response += alertConfig_.thresholdsEnabled ? "true" : "false";
+    response += F(",\"probeFaultEnabled\":"); response += alertConfig_.probeFaultEnabled ? "true" : "false";
+    response += F(",\"minimum\":"); response += String(alertConfig_.minimum, 6);
+    response += F(",\"maximum\":"); response += String(alertConfig_.maximum, 6);
+    response += F(",\"hysteresis\":"); response += String(alertConfig_.hysteresis, 6);
+    response += F(",\"debounceSeconds\":"); response += String(alertConfig_.debounceMs / 1000);
+    response += F(",\"repeatSeconds\":"); response += String(alertConfig_.repeatMs / 1000);
+    response += F("},\"temperatureCalibration\":{\"offsetC\":"); response += String(temperatureCalibration_.offsetC, 6);
+    response += F(",\"timestamp\":"); response += String(temperatureCalibration_.timestamp);
+    response += F(",\"calibrated\":"); response += temperatureCalibration_.calibrated ? "true" : "false";
+    response += F("}}");
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.sendHeader("Content-Disposition", "attachment; filename=\"aquamax-config.json\"");
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::restoreConfiguration() {
+    if (!allowedOrigin(server_.header("Origin")) || server_.arg("confirm") != "yes") { server_.send(403, "text/plain", "Request rejected"); return; }
+    const uint32_t now = millis();
+    if (rebootPending_ || (systemWritten_ && now - lastSystemWriteMs_ < systemWriteIntervalMs) ||
+        (alertWritten_ && now - lastAlertWriteMs_ < alertWriteIntervalMs) ||
+        (calibrationWritten_ && now - lastCalibrationWriteMs_ < calibrationWriteIntervalMs)) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    const TimeZone* selected = findTimeZone(server_.arg("timezone").c_str());
+    const String enabled = server_.arg("thresholdsEnabled"), fault = server_.arg("probeFaultEnabled"), calibrated = server_.arg("calibrated");
+    const String timestamp = server_.arg("timestamp");
+    AlertConfig alerts;
+    TemperatureCalibration calibration;
+    if (server_.clientContentLength() <= 0 || server_.clientContentLength() > 1024 || server_.arg("version") != "1" || !selected ||
+        (enabled != "0" && enabled != "1") || (fault != "0" && fault != "1") || (calibrated != "0" && calibrated != "1") ||
+        !parseFloat(server_.arg("minimum"), alerts.minimum) || !parseFloat(server_.arg("maximum"), alerts.maximum) ||
+        !parseFloat(server_.arg("hysteresis"), alerts.hysteresis) || !parseSeconds(server_.arg("debounceSeconds"), 3600, alerts.debounceMs) ||
+        !parseSeconds(server_.arg("repeatSeconds"), 86400, alerts.repeatMs) || !parseFloat(server_.arg("offsetC"), calibration.offsetC) ||
+        !timestamp.length() || timestamp.length() > 10) { server_.send(400, "text/plain", "Invalid configuration"); return; }
+    for (unsigned index = 0; index < timestamp.length(); ++index) if (timestamp[index] < '0' || timestamp[index] > '9') { server_.send(400, "text/plain", "Invalid configuration"); return; }
+    const unsigned long long parsedTimestamp = strtoull(timestamp.c_str(), nullptr, 10);
+    if (parsedTimestamp > UINT32_MAX) { server_.send(400, "text/plain", "Invalid configuration"); return; }
+    alerts.thresholdsEnabled = enabled == "1";
+    alerts.probeFaultEnabled = fault == "1";
+    calibration.calibrated = calibrated == "1";
+    calibration.timestamp = static_cast<uint32_t>(parsedTimestamp);
+    if (!validAlertConfig(alerts) || !validTemperatureCalibration(calibration)) { server_.send(400, "text/plain", "Invalid configuration"); return; }
+    systemWritten_ = alertWritten_ = calibrationWritten_ = true;
+    lastSystemWriteMs_ = lastAlertWriteMs_ = lastCalibrationWriteMs_ = now;
+    if (!temperatureCalibrationStore_.save(calibration)) { server_.send(503, "text/plain", "Calibration could not be restored; no further settings were changed"); return; }
+    temperatureCalibration_ = calibration;
+    temperatureOffset_.store(calibration.offsetC);
+    temperatureCalibrationError_ = false;
+    if (!alertSettingsStore_.save(alerts)) { alertSettingsError_ = true; server_.send(503, "text/plain", "Calibration restored, but alerts could not be saved"); return; }
+    alertConfig_ = alerts;
+    alertSettingsError_ = false;
+    temperatureAlerts_.reset();
+    temperatureAlertState_ = AlertState::normal;
+    Preferences storage;
+    if (!storage.begin("clock", false)) { server_.send(503, "text/plain", "Calibration and alerts restored, but timezone could not be saved"); return; }
+    const bool saved = storage.putString("timezone", selected->name) == strlen(selected->name);
+    storage.end();
+    if (!saved) { server_.send(503, "text/plain", "Calibration and alerts restored, but timezone could not be saved"); return; }
+    timezone_ = selected;
+    setenv("TZ", timezone_->rule, 1);
+    tzset();
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+bool DashboardPreview::flushHistory() {
+    if (!filesystemReady_) return false;
+    if (!historyStarted_) return true;
+    const bool temperatureSaved = temperatureHistory_.flush();
+    const bool phSaved = phHistory_.flush();
+    const bool tdsSaved = tdsHistory_.flush();
+    return temperatureSaved && phSaved && tdsSaved;
+}
+
+void DashboardPreview::reboot() {
+    if (!allowedOrigin(server_.header("Origin")) || server_.arg("confirm") != "yes") { server_.send(403, "text/plain", "Request rejected"); return; }
+    const uint32_t now = millis();
+    if (rebootPending_ || (systemWritten_ && now - lastSystemWriteMs_ < systemWriteIntervalMs)) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    systemWritten_ = true;
+    lastSystemWriteMs_ = now;
+    if (!flushHistory()) { server_.send(503, "text/plain", "History could not be saved"); return; }
+    server_.send(200, "application/json", "{\"ok\":true}");
+    rebootPending_ = true;
+    rebootRequestedMs_ = millis();
+}
+
+void DashboardPreview::uploadFirmware() {
+    HTTPUpload& upload = server_.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        firmwareUploadSucceeded_ = false;
+        firmwareUploadActive_ = false;
+        firmwareUploadBytes_ = 0;
+        const uint32_t now = millis();
+        const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+        if (!allowedOrigin(server_.header("Origin")) || server_.arg("confirm") != "yes" || rebootPending_ ||
+            (systemWritten_ && now - lastSystemWriteMs_ < systemWriteIntervalMs) || !partition ||
+            server_.clientContentLength() <= 0 || server_.clientContentLength() > static_cast<int>(partition->size + 4096) ||
+            !upload.filename.endsWith(".bin")) return;
+        systemWritten_ = true;
+        lastSystemWriteMs_ = now;
+        firmwarePartition_ = partition;
+        if (flushHistory()) firmwareUploadActive_ = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &firmwareHandle_) == ESP_OK;
+    } else if (upload.status == UPLOAD_FILE_WRITE && firmwareUploadActive_) {
+        firmwareUploadBytes_ += upload.currentSize;
+        if (firmwareUploadBytes_ > firmwarePartition_->size || esp_ota_write(firmwareHandle_, upload.buf, upload.currentSize) != ESP_OK) {
+            esp_ota_abort(firmwareHandle_);
+            firmwareUploadActive_ = false;
+        }
+    } else if (upload.status == UPLOAD_FILE_END && firmwareUploadActive_) {
+        const esp_err_t result = esp_ota_end(firmwareHandle_);
+        firmwareUploadSucceeded_ = firmwareUploadBytes_ > 0 && result == ESP_OK && esp_ota_set_boot_partition(firmwarePartition_) == ESP_OK;
+        firmwareUploadActive_ = false;
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (firmwareUploadActive_) esp_ota_abort(firmwareHandle_);
+        firmwareUploadActive_ = false;
+        firmwareUploadSucceeded_ = false;
+    }
+}
+
+void DashboardPreview::updateAlerts(uint32_t now) {
+    portENTER_CRITICAL(&snapshotMutex_);
+    const SensorSnapshot snapshot = snapshot_;
+    portEXIT_CRITICAL(&snapshotMutex_);
+    const bool fresh = snapshot.temperature.hasValue && millis() - snapshot.temperature.lastSeenMs < 3000;
+    ProbeState probe = snapshot.temperature.state;
+    if (probe == ProbeState::connected && snapshot.temperature.hasValue && !fresh) probe = ProbeState::unstable;
+    const AlertState previous = temperatureAlertState_;
+    const AlertResult result = temperatureAlerts_.update(now, probe, fresh, snapshot.temperature.valueC, alertConfig_);
+    temperatureAlertState_ = result.state;
+    if (result.event != AlertEvent::none) {
+        lastAlertEvent_ = result.event;
+        ++alertSequence_;
+        if (result.state != previous && journalReady_) {
+            const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+            const char* text = result.event == AlertEvent::low ? "Temperature below minimum" :
+                               result.event == AlertEvent::high ? "Temperature above maximum" :
+                               result.event == AlertEvent::probeFault ? "Temperature probe fault" : "Temperature alert recovered";
+            journalReady_ = eventJournal_.add(clock.synchronized ? clock.unixSeconds : 0,
+                                              result.event == AlertEvent::recovered ? JournalKind::recovery : JournalKind::alert, text);
+        }
+    }
+}
+
+void DashboardPreview::serveAlerts() {
+    String response = F("{\"temperature\":{\"thresholdsEnabled\":");
+    response += alertConfig_.thresholdsEnabled ? "true" : "false";
+    response += F(",\"probeFaultEnabled\":");
+    response += alertConfig_.probeFaultEnabled ? "true" : "false";
+    response += F(",\"minimum\":"); response += String(alertConfig_.minimum, 2);
+    response += F(",\"maximum\":"); response += String(alertConfig_.maximum, 2);
+    response += F(",\"hysteresis\":"); response += String(alertConfig_.hysteresis, 2);
+    response += F(",\"debounceSeconds\":"); response += String(alertConfig_.debounceMs / 1000);
+    response += F(",\"repeatSeconds\":"); response += String(alertConfig_.repeatMs / 1000);
+    response += F(",\"state\":\""); response += alertStateName(temperatureAlertState_);
+    response += F("\"},\"settingsError\":"); response += alertSettingsError_ ? "true" : "false";
+    response += F(",\"ph\":\"disabled\",\"tds\":\"disabled\"}");
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::changeAlerts() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    const uint32_t now = millis();
+    if (alertWritten_ && now - lastAlertWriteMs_ < alertWriteIntervalMs) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    const String enabled = server_.arg("thresholdsEnabled");
+    const String fault = server_.arg("probeFaultEnabled");
+    AlertConfig candidate;
+    if ((enabled != "0" && enabled != "1") || (fault != "0" && fault != "1") ||
+        !parseFloat(server_.arg("minimum"), candidate.minimum) || !parseFloat(server_.arg("maximum"), candidate.maximum) ||
+        !parseFloat(server_.arg("hysteresis"), candidate.hysteresis) ||
+        !parseSeconds(server_.arg("debounceSeconds"), 3600, candidate.debounceMs) ||
+        !parseSeconds(server_.arg("repeatSeconds"), 86400, candidate.repeatMs)) {
+        server_.send(400, "text/plain", "Invalid alert settings"); return;
+    }
+    candidate.thresholdsEnabled = enabled == "1";
+    candidate.probeFaultEnabled = fault == "1";
+    if (!validAlertConfig(candidate)) { server_.send(400, "text/plain", "Invalid alert settings"); return; }
+    alertWritten_ = true;
+    lastAlertWriteMs_ = now;
+    if (!alertSettingsStore_.save(candidate)) { alertSettingsError_ = true; server_.send(503, "text/plain", "Alert settings could not be saved"); return; }
+    alertConfig_ = candidate;
+    alertSettingsError_ = false;
+    temperatureAlerts_.reset();
+    temperatureAlertState_ = AlertState::normal;
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void DashboardPreview::serveEvents() {
+    if (!journalReady_) { server_.send(503, "text/plain", "Event journal unavailable"); return; }
+    String response = F("{\"events\":[");
+    for (std::size_t index = 0; index < eventJournal_.size(); ++index) {
+        const JournalEntry* entry = eventJournal_.recent(index);
+        if (!entry) continue;
+        if (index) response += ',';
+        response += F("{\"id\":"); response += String(entry->id);
+        response += F(",\"timestamp\":"); response += entry->timestamp ? String(entry->timestamp) : String("null");
+        response += F(",\"kind\":\"");
+        response += entry->kind == JournalKind::note ? "note" : entry->kind == JournalKind::alert ? "alert" : "recovery";
+        response += F("\",\"text\":"); response += jsonText(entry->text);
+        response += '}';
+    }
+    response += F("]}");
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::addEvent() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    if (!journalReady_) { server_.send(503, "text/plain", "Event journal unavailable"); return; }
+    const uint32_t now = millis();
+    if (journalWritten_ && now - lastJournalWriteMs_ < journalWriteIntervalMs) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    const String text = server_.arg("text");
+    if (text.length() != std::strlen(text.c_str()) || !validJournalText(text.c_str())) { server_.send(400, "text/plain", "Invalid note"); return; }
+    const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+    journalWritten_ = true;
+    lastJournalWriteMs_ = now;
+    if (!eventJournal_.add(clock.synchronized ? clock.unixSeconds : 0, JournalKind::note, text.c_str())) {
+        journalReady_ = false; server_.send(503, "text/plain", "Event journal unavailable"); return;
+    }
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void DashboardPreview::deleteEvent() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    if (!journalReady_) { server_.send(503, "text/plain", "Event journal unavailable"); return; }
+    if (server_.arg("confirm") != "yes") { server_.send(400, "text/plain", "Confirmation required"); return; }
+    const String text = server_.arg("id");
+    if (!text.length() || text.length() > 10) { server_.send(400, "text/plain", "Invalid event"); return; }
+    for (unsigned index = 0; index < text.length(); ++index) if (text[index] < '0' || text[index] > '9') { server_.send(400, "text/plain", "Invalid event"); return; }
+    const unsigned long long parsed = strtoull(text.c_str(), nullptr, 10);
+    if (!parsed || parsed > UINT32_MAX) { server_.send(400, "text/plain", "Invalid event"); return; }
+    bool found = false;
+    for (std::size_t index = 0; index < eventJournal_.size(); ++index) {
+        const JournalEntry* entry = eventJournal_.recent(index);
+        if (entry && entry->id == parsed) { found = true; break; }
+    }
+    if (!found) { server_.send(404, "text/plain", "Event not found"); return; }
+    const uint32_t now = millis();
+    if (journalWritten_ && now - lastJournalWriteMs_ < journalWriteIntervalMs) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    journalWritten_ = true;
+    lastJournalWriteMs_ = now;
+    if (!eventJournal_.remove(static_cast<uint32_t>(parsed))) { journalReady_ = false; server_.send(503, "text/plain", "Event journal unavailable"); return; }
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void DashboardPreview::serveTips() {
+    portENTER_CRITICAL(&snapshotMutex_);
+    const SensorSnapshot snapshot = snapshot_;
+    portEXIT_CRITICAL(&snapshotMutex_);
+    const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+    const char* tip = nullptr;
+    if (temperatureAlertState_ == AlertState::probeFault || snapshot.temperature.state == ProbeState::disconnected)
+        tip = "Check the temperature probe, connector and wiring.";
+    else if (temperatureAlertState_ == AlertState::low)
+        tip = "Temperature is below your configured range. Check the heater and water circulation.";
+    else if (temperatureAlertState_ == AlertState::high)
+        tip = "Temperature is above your configured range. Check heating and cooling.";
+    else if (clock.synchronized && temperatureCalibration_.calibrated && temperatureCalibration_.timestamp &&
+             clock.unixSeconds >= temperatureCalibration_.timestamp && clock.unixSeconds - temperatureCalibration_.timestamp >= 90u * 86400u)
+        tip = "Check the temperature probe against a trusted reference thermometer.";
+    String response = F("{\"tips\":[");
+    if (tip) response += jsonText(tip);
+    response += F("]}");
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", response);
 }
 
 void DashboardPreview::updateHistory(uint32_t now) {
@@ -583,7 +965,9 @@ void DashboardPreview::updateNetwork(uint32_t now) {
     server_.handleClient();
     socket_.loop();
     now = millis();
+    if (rebootPending_ && now - rebootRequestedMs_ >= responseGraceMs) ESP.restart();
     updateHistory(now);
+    updateAlerts(now);
     if (now - lastBroadcastMs_ >= broadcastIntervalMs) {
         lastBroadcastMs_ = now;
         if (socket_.connectedClients() > 0) {

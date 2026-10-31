@@ -5,6 +5,7 @@
 #include <DNSServer.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
+#include <esp_ota_ops.h>
 #include <atomic>
 #include <cstdio>
 #include "config/pins.h"
@@ -12,6 +13,8 @@
 #include "sensors/SensorSnapshot.h"
 #include "sensors/TimeZone.h"
 #include "settings/TemperatureCalibrationStore.h"
+#include "settings/AlertSettingsStore.h"
+#include "events/EventJournal.h"
 #include "webserver/HistoryFileStorage.h"
 
 namespace aquamax {
@@ -32,6 +35,19 @@ private:
     void clearHistory();
     void serveCalibration();
     void changeTemperatureCalibration();
+    void serveAlerts();
+    void changeAlerts();
+    void updateAlerts(uint32_t now);
+    void serveEvents();
+    void addEvent();
+    void deleteEvent();
+    void serveTips();
+    void serveSystem();
+    void serveConfiguration();
+    void restoreConfiguration();
+    bool flushHistory();
+    void reboot();
+    void uploadFirmware();
     void uploadAsset();
     void updateHistory(uint32_t now);
     void serveState();
@@ -47,6 +63,19 @@ private:
     TemperatureProbe temperature_{pins::oneWire};
     SensorSnapshotBuilder sensorBuilder_;
     SensorSnapshot snapshot_;
+    AlertSettingsStore alertSettingsStore_;
+    AlertConfig alertConfig_;
+    AlertEngine temperatureAlerts_;
+    AlertState temperatureAlertState_ = AlertState::normal;
+    AlertEvent lastAlertEvent_ = AlertEvent::none;
+    uint32_t alertSequence_ = 0;
+    uint32_t lastAlertWriteMs_ = 0;
+    bool alertWritten_ = false;
+    bool alertSettingsError_ = false;
+    EventJournal eventJournal_{"/littlefs/events.bin"};
+    bool journalReady_ = false;
+    bool journalWritten_ = false;
+    uint32_t lastJournalWriteMs_ = 0;
     TemperatureCalibrationStore temperatureCalibrationStore_;
     TemperatureCalibration temperatureCalibration_;
     std::atomic<float> temperatureOffset_{0.0f};
@@ -84,6 +113,15 @@ private:
     bool connected_ = false;
     bool setupFailed_ = false;
     bool filesystemReady_ = false;
+    bool rebootPending_ = false;
+    uint32_t rebootRequestedMs_ = 0;
+    uint32_t lastSystemWriteMs_ = 0;
+    bool systemWritten_ = false;
+    bool firmwareUploadActive_ = false;
+    bool firmwareUploadSucceeded_ = false;
+    std::size_t firmwareUploadBytes_ = 0;
+    esp_ota_handle_t firmwareHandle_ = 0;
+    const esp_partition_t* firmwarePartition_ = nullptr;
 };
 
 } // namespace aquamax
