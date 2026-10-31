@@ -15,6 +15,7 @@
 #include "config/pins.h"
 #include "sensors/ClockStatus.h"
 #include "sensors/HistoryAggregate.h"
+#include "display/TftGauge.h"
 
 namespace aquamax {
 namespace {
@@ -208,6 +209,11 @@ void DashboardPreview::begin() {
     });
     socket_.begin();
     socket_.enableHeartbeat(15000, 3000, 2);
+
+#if defined(AQUAMAX_TFT)
+    tftRendererReady_ = beginTftGauges();
+    if (!tftRendererReady_) Serial.println("TFT initialization failed; dashboard remains available.");
+#endif
 
     Preferences storage;
     WifiCredentials credentials{};
@@ -461,6 +467,9 @@ void DashboardPreview::serveSystem() {
     response += F(",\"filesystemUsedBytes\":"); response += String(filesystemReady_ ? LittleFS.usedBytes() : 0);
     response += F(",\"filesystemTotalBytes\":"); response += String(filesystemReady_ ? LittleFS.totalBytes() : 0);
     response += F(",\"journalReady\":"); response += journalReady_ ? "true" : "false";
+#if defined(AQUAMAX_TFT)
+    response += F(",\"tftRenderer\":"); response += tftRendererReady_ ? "\"initialized\"" : "\"unavailable\"";
+#endif
     response += F(",\"wifiConnected\":"); response += WiFi.status() == WL_CONNECTED ? "true" : "false";
     response += F(",\"wifiRssi\":"); response += WiFi.status() == WL_CONNECTED ? String(WiFi.RSSI()) : String("null");
     response += F(",\"ipAddress\":"); response += WiFi.status() == WL_CONNECTED ? jsonText(WiFi.localIP().toString().c_str()) : String("null");
@@ -600,6 +609,7 @@ void DashboardPreview::updateAlerts(uint32_t now) {
     const AlertState previous = temperatureAlertState_;
     const AlertResult result = temperatureAlerts_.update(now, probe, fresh, snapshot.temperature.valueC, alertConfig_);
     temperatureAlertState_ = result.state;
+    displayTemperatureAlert_.store(result.state != AlertState::normal);
     if (result.event != AlertEvent::none) {
         lastAlertEvent_ = result.event;
         ++alertSequence_;
@@ -938,6 +948,9 @@ void DashboardPreview::update(uint32_t now) {
     portENTER_CRITICAL(&snapshotMutex_);
     snapshot_ = snapshot;
     portEXIT_CRITICAL(&snapshotMutex_);
+#if defined(AQUAMAX_TFT)
+    updateTftGauges(snapshot, displayTemperatureAlert_.load(), now);
+#endif
     if (now - lastSensorReportMs_ >= 5000) {
         lastSensorReportMs_ = now;
         Serial.print("Sensors: temp_C=");

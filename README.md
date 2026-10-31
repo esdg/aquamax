@@ -5,8 +5,9 @@ an **in-progress implementation**, not yet a complete water-quality monitor.
 Phase 1 supports a temperature-only hardware setup; analog sensor integration
 and physical verification remain unfinished. The Wi-Fi dashboard includes
 temperature history, a temperature calibration workflow, local alerts and a
-bounded event journal. Display rendering and analog calibration remain
-unfinished; external notification integrations are not yet implemented.
+bounded event journal. The temperature TFT has been visually tested with the
+opt-in renderer; the other displays, analog calibration and external
+notification integrations remain unfinished.
 
 ## Current status
 
@@ -26,9 +27,12 @@ unfinished; external notification integrations are not yet implemented.
 - History records available measurements at 10-second intervals after time
   synchronization, with four bounded storage tiers, charting and CSV export.
   The connected DS18B20 is the only source currently enabled.
-- Phase 2 has a native-tested gauge model and generated alpha masks for the
-  supplied SVG icons. The GC9A01 renderer, display initialization, and hardware
-  tests are not implemented yet; no display GPIO is enabled by these changes.
+- The `web_tft` environment renders GC9A01 gauges with a shared SPI bus and
+  generated icon masks. Temperature uses the real filtered reading; pH and TDS
+  show disabled states. Rendering runs at up to 5 frames per second with a
+  provisional 0-40 C temperature scale. The temperature gauge was reported
+  visible on one GC9A01 screen; the other screens remain untested. `web_preview`
+  still leaves display GPIO unused.
 - PH-4502C-style negative-slope calibration and first-calibration-relative slope
   health have native tests and a separate NVS record. The calibration wizard,
   physical ADC integration and real-board NVS persistence remain untested.
@@ -170,12 +174,27 @@ npm run build --prefix web
 & "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" run -e web_preview
 ```
 
+To build the dashboard with the optional TFT renderer instead, use:
+
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" run -e web_tft
+```
+
+This initializes all three proposed TFT chip selects and the shared reset,
+clock, data and DC pins. It does not initialize GPIO 18 or drive `BLK`.
+The display electronics and backlight wiring must be checked against the
+specific breakout before testing. An unpowered backlight can make a correctly
+driven screen appear black. TFT SPI is write-only here, so renderer status
+does not prove a screen is connected or showing a correct image.
+
 For firmware-only changes, close the serial monitor and upload the firmware;
 this keeps the existing LittleFS files and NVS settings:
 
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" run -e web_preview -t upload
 ```
+
+Use `web_tft` instead of `web_preview` in that command to retain TFT support.
 
 For a device already running the current firmware and connected to the LAN,
 update dashboard assets individually without replacing history:

@@ -67,6 +67,7 @@ private:
     AlertConfig alertConfig_;
     AlertEngine temperatureAlerts_;
     AlertState temperatureAlertState_ = AlertState::normal;
+    std::atomic<bool> displayTemperatureAlert_{false};
     AlertEvent lastAlertEvent_ = AlertEvent::none;
     uint32_t alertSequence_ = 0;
     uint32_t lastAlertWriteMs_ = 0;
@@ -113,6 +114,9 @@ private:
     bool connected_ = false;
     bool setupFailed_ = false;
     bool filesystemReady_ = false;
+#if defined(AQUAMAX_TFT)
+    bool tftRendererReady_ = false;
+#endif
     bool rebootPending_ = false;
     uint32_t rebootRequestedMs_ = 0;
     uint32_t lastSystemWriteMs_ = 0;

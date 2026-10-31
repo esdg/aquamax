@@ -4,8 +4,11 @@
 
 This is a **proposed pinout**, not a verified wiring diagram. The pH board is
 PH-4502C-style, but its exact output swing is not yet verified. The TDS module,
-screen backlight circuits and board revision are also unconfirmed. The current firmware runs in simulation mode:
-it does not read the physical sensors, drive the displays or switch TDS power.
+screen backlight circuits and board revision are also unconfirmed. The default
+simulation firmware does not drive hardware. The separate `web_tft` build
+drives the proposed display SPI pins but does not control the backlight or
+switch TDS power. One temperature display has shown the gauge; the remaining
+display wiring and screens have not been verified.
 
 Do not power or connect the modules until their datasheets and voltages have
 been checked. Disconnect USB power while changing connections. GPIO numbers
