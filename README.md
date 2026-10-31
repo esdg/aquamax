@@ -158,6 +158,21 @@ invented date. An already synchronized clock continues running during network
 loss but is reset on reboot; there is no battery-backed real-time clock.
 Internet access is needed for the configured NTP servers, not for the dashboard.
 
+The dashboard appearance can be set to system, light or dark in Settings. The
+choice is stored in the browser, not on the device. The home overview uses
+live device data; disabled probes and unavailable readings remain clearly
+marked rather than displaying example values.
+
+The dashboard includes an offline service worker for secure origins. After an
+online visit on HTTPS or localhost has installed it, a subsequent offline
+reload can show the cached dashboard shell and its artwork. Measurements and
+device actions are not cached; the dashboard shows offline placeholders and
+reconnects when the device is available. Browsers do not enable service workers
+on the device's ordinary HTTP IP or `aquamax.local` address, so an offline
+reload there may show a browser error. HTTPS or a separate trusted proxy is
+not provided by this firmware, and the first visit always requires a working
+connection.
+
 After startup or reconnection, the temperature reading is held until three
 valid conversions establish a connection and five connected conversions fill
 the median filter. Expect roughly six seconds plus the dashboard polling delay.
@@ -203,6 +218,12 @@ update dashboard assets individually without replacing history:
 npm run build --prefix web
 & "$env:USERPROFILE\.platformio\penv\Scripts\python.exe" tools/upload_dashboard.py
 ```
+
+The dashboard build optimizes the supplied banner and generates compressed
+logo and image assets. Before uploading these assets to an older installation,
+first install firmware containing the new dashboard asset routes and upload
+allowlist. Firmware-only upload preserves the existing LittleFS history and NVS
+settings. Uploading the new dashboard to older firmware will fail.
 
 The uploader defaults to `http://aquamax.local`; use `--url http://DEVICE_IP`
 when mDNS is unavailable. It requires the current firmware's asset endpoint.

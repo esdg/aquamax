@@ -14,7 +14,7 @@ def main():
         parser.error("Use the device's HTTP hostname or IP address without a path or nonstandard port.")
     origin = f"http://{url.hostname}"
     assets = Path(__file__).resolve().parent.parent / "data"
-    for name in ("app.css.gz", "app.js.gz", "manifest.webmanifest.gz", "icon-192.png.gz", "icon-512.png.gz", "service-worker.js.gz", "index.html.gz"):
+    for name in ("app.css.gz", "app.js.gz", "manifest.webmanifest.gz", "icon-192.png.gz", "icon-512.png.gz", "logo-aquamax.svg.gz", "jumbo.jpg.gz", "index.html.gz", "service-worker.js.gz"):
         content = (assets / name).read_bytes()
         if not content.startswith(b"\x1f\x8b") or len(content) > 262144:
             raise ValueError(f"Invalid or oversized asset: {name}")

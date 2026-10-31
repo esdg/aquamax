@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
+import { Settings as SettingsIcon } from 'lucide-preact'
 import thermometer from '../../assets/icons/thermometer.svg?raw'
 import thermometerOff from '../../assets/icons/thermometer-off.svg?raw'
 import drop from '../../assets/icons/drop.svg?raw'
@@ -12,6 +13,7 @@ import { Calibration } from './Calibration'
 import { Alerts } from './Alerts'
 import { Journal } from './Journal'
 import { Settings, System } from './System'
+import { Overview } from './Overview'
 import './app.css'
 
 const stateLabels: Record<ProbeState, string> = {
@@ -20,6 +22,14 @@ const stateLabels: Record<ProbeState, string> = {
 }
 
 const timezones = ['Europe/Paris', 'Europe/London', 'Etc/UTC', 'America/New_York', 'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney']
+type ThemePreference = 'system' | 'light' | 'dark'
+
+function initialTheme(): ThemePreference {
+  try {
+    const saved = localStorage.getItem('aquamax-theme')
+    return saved === 'light' || saved === 'dark' ? saved : 'system'
+  } catch { return 'system' }
+}
 
 function Gauge({ name, unit, value, state, icon, mutedIcon, maximum }: {
   name: string; unit: string; value: number | null; state: ProbeState | null;
@@ -49,6 +59,7 @@ function Gauge({ name, unit, value, state, icon, mutedIcon, maximum }: {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemePreference>(initialTheme)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [status, setStatus] = useState<'loading' | 'online' | 'offline'>('loading')
   const [updated, setUpdated] = useState<string | null>(null)
@@ -61,6 +72,15 @@ export function App() {
   const browserEnabledRef = useRef(browserEnabled)
   browserEnabledRef.current = browserEnabled
   const lastAlertSequence = useRef<number | null>(null)
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => { document.documentElement.dataset.theme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme }
+    apply()
+    media.addEventListener('change', apply)
+    try { localStorage.setItem('aquamax-theme', theme) } catch { }
+    return () => media.removeEventListener('change', apply)
+  }, [theme])
 
   useEffect(() => {
     return startLiveFeed({
@@ -115,21 +135,19 @@ export function App() {
 
   return (
     <div class="shell">
-      <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">A</span><span>AquaMax<small>WATER MONITOR</small></span></div><div class="connection" role="status"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} />{status === 'loading' ? 'Connecting' : status === 'online' ? 'Device online' : 'Device offline'}</div></header>
+      <header class="topbar"><button type="button" class="brand" onClick={() => setPage('home')} aria-label="AquaMax home"><img src="/logo-aquamax.svg" alt="AquaMax" /></button><div class="topbar-right"><span class="tank-name">AquaMax <span>/</span> Aquarium</span><div class="connection" role="status"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} />{status === 'loading' ? 'Connecting' : status === 'online' ? 'Online' : 'Offline'}</div><button class="settings-link" type="button" onClick={() => setPage('settings')} aria-label="Settings" title="Settings"><SettingsIcon size={17} aria-hidden="true" /></button></div></header>
       <nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button><button type="button" aria-current={page === 'history' ? 'page' : undefined} onClick={() => setPage('history')}>History</button><button type="button" aria-current={page === 'calibration' ? 'page' : undefined} onClick={() => setPage('calibration')}>Calibration</button><button type="button" aria-current={page === 'alerts' ? 'page' : undefined} onClick={() => setPage('alerts')}>Alerts</button><button type="button" aria-current={page === 'journal' ? 'page' : undefined} onClick={() => setPage('journal')}>Journal</button><button type="button" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button><button type="button" aria-current={page === 'system' ? 'page' : undefined} onClick={() => setPage('system')}>System</button></nav>
       <main class="content">
         {page === 'home' ? <>
-        <div class="page-heading"><div><div class="eyebrow">AQUARIUM / OVERVIEW</div><h1>Water conditions</h1><p>Live readings from your aquarium.</p></div><div class="update-time"><span>LAST UPDATE</span><strong>{status === 'online' ? updated : '--:--:--'}</strong></div></div>
+        <div class="dashboard-hero"><div><span class="hero-eyebrow">YOUR AQUARIUM, AT A GLANCE</span><h1>Welcome back</h1><div class="hero-status"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} />{status === 'online' ? 'Monitoring live' : status === 'loading' ? 'Connecting to device' : 'Device offline'} <span class="hero-updated">{status === 'online' && updated ? `Updated ${updated}` : 'Waiting for readings'}</span></div></div><p>A healthier aquarium.<br />A brighter tomorrow.</p></div>
         {snapshot?.alerts?.temperature && snapshot.alerts.temperature !== 'normal' && <div class="active-alert" role="alert"><strong>Temperature alert</strong><span>{snapshot.alerts.temperature === 'low' ? 'Below minimum' : snapshot.alerts.temperature === 'high' ? 'Above maximum' : 'Probe fault'}</span><button type="button" onClick={() => setPage('alerts')}>View alerts</button></div>}
         {snapshot?.alerts?.settingsError && <p class="calibration-error" role="alert">Alert settings could not be loaded. Temperature thresholds are disabled.</p>}
-        <div class="section-label"><h2>Live measurements</h2><span>DS18B20 + analog probes</span></div>
-        <div class="metrics">
+        <div class="overview-grid"><section class="overview-panel overview-readings"><div class="panel-heading"><div><h2>Live readings</h2><p>Real-time water parameters</p></div><span class="live-label"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} /> {status === 'online' ? 'LIVE' : status === 'loading' ? 'CONNECTING' : 'OFFLINE'}</span></div><div class="metrics">
           <Gauge name="Temperature" unit="°C" value={snapshot?.temperature.valueC ?? null} state={snapshot?.temperature.state ?? null} icon={thermometer} mutedIcon={thermometerOff} maximum={40} />
           <Gauge name="pH" unit="pH" value={snapshot?.ph.value ?? null} state={snapshot?.ph.state ?? null} icon={drop} mutedIcon={dropOff} maximum={14} />
           <Gauge name="TDS" unit="ppm" value={snapshot?.tds.value ?? null} state={snapshot?.tds.state ?? null} icon={drops} mutedIcon={dropsOff} maximum={1000} />
-        </div>
-        <div class="device-row"><div><span class="device-label">CONNECTION</span><strong>{status === 'online' ? snapshot?.wifi === 'connected' ? 'Wi-Fi connected' : 'Setup network' : 'Waiting for device'}</strong></div><div><span class="device-label">DEVICE UPTIME</span><strong>{snapshot ? `${Math.floor(snapshot.uptimeSeconds / 60)} min` : '--'}</strong></div><div><span class="device-label">DEVICE TIME</span><strong>{snapshot?.time?.synchronized ? snapshot.time.local ?? 'Synchronized' : 'Not synchronized'}</strong></div><div><label class="device-label" for="timezone">TIMEZONE</label><select id="timezone" value={timezonePending ?? snapshot?.time?.timezone ?? 'Europe/Paris'} disabled={status !== 'online' || !snapshot?.time?.timezone || timezonePending !== null} onChange={event => void changeTimezone(event.currentTarget.value)}>{timezones.map(timezone => <option value={timezone} key={timezone}>{timezone.replaceAll('_', ' ')}</option>)}</select>{timezoneError && <span class="timezone-error" role="alert">Could not save timezone</span>}</div></div>
-        </> : page === 'history' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'calibration' ? <Calibration timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'alerts' ? <Alerts live={snapshot?.alerts} browserEnabled={browserEnabled} onBrowserChange={changeBrowserNotifications} /> : page === 'journal' ? <Journal timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'settings' ? <Settings timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} pending={timezonePending} error={timezoneError} online={status === 'online'} timezones={timezones} onTimezone={zone => void changeTimezone(zone)} /> : <System />}
+        </div></section><section class="overview-panel overview-history"><div class="panel-heading"><div><h2>History</h2><p>Water parameters over time</p></div><button type="button" onClick={() => setPage('history')}>View all <span aria-hidden="true">›</span></button></div>{status === 'online' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} compact /> : <p class="history-placeholder">{status === 'loading' ? 'Connecting to device...' : 'History unavailable while offline.'}</p>}</section><Overview snapshot={snapshot} online={status === 'online'} timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} navigate={setPage} /></div>
+        </> : page === 'history' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'calibration' ? <Calibration timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'alerts' ? <Alerts live={snapshot?.alerts} browserEnabled={browserEnabled} onBrowserChange={changeBrowserNotifications} /> : page === 'journal' ? <Journal timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'settings' ? <Settings timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} pending={timezonePending} error={timezoneError} online={status === 'online'} timezones={timezones} onTimezone={zone => void changeTimezone(zone)} theme={theme} onTheme={setTheme} /> : <System />}
       </main>
       <footer>AquaMax <span>LOCAL MONITORING</span></footer>
     </div>

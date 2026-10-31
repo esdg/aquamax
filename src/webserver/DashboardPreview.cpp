@@ -144,6 +144,8 @@ void DashboardPreview::begin() {
     server_.on("/service-worker.js", HTTP_GET, [this] { serveAsset("/service-worker.js", "application/javascript"); });
     server_.on("/icon-192.png", HTTP_GET, [this] { serveAsset("/icon-192.png", "image/png"); });
     server_.on("/icon-512.png", HTTP_GET, [this] { serveAsset("/icon-512.png", "image/png"); });
+    server_.on("/logo-aquamax.svg", HTTP_GET, [this] { serveAsset("/logo-aquamax.svg", "image/svg+xml"); });
+    server_.on("/jumbo.jpg", HTTP_GET, [this] { serveAsset("/jumbo.jpg", "image/jpeg"); });
     server_.on("/api/state", HTTP_GET, [this] { serveState(); });
     server_.on("/api/timezone", HTTP_POST, [this] { setTimezone(); });
     server_.on("/api/history", HTTP_GET, [this] { serveHistory(false); });
@@ -347,7 +349,8 @@ void DashboardPreview::uploadAsset() {
             server_.clientContentLength() <= 0 || server_.clientContentLength() > static_cast<int>(maxAssetBytes + 4096) ||
             (assetUploadName_ != "index.html.gz" && assetUploadName_ != "app.js.gz" && assetUploadName_ != "app.css.gz" &&
              assetUploadName_ != "manifest.webmanifest.gz" && assetUploadName_ != "service-worker.js.gz" &&
-             assetUploadName_ != "icon-192.png.gz" && assetUploadName_ != "icon-512.png.gz")) return;
+             assetUploadName_ != "icon-192.png.gz" && assetUploadName_ != "icon-512.png.gz" &&
+             assetUploadName_ != "logo-aquamax.svg.gz" && assetUploadName_ != "jumbo.jpg.gz")) return;
         assetUpload_ = std::fopen(temporary, "w+b");
     } else if (upload.status == UPLOAD_FILE_WRITE && assetUpload_) {
         assetUploadBytes_ += upload.currentSize;

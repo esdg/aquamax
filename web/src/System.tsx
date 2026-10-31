@@ -15,8 +15,9 @@ function parseBackup(value: unknown): Backup {
   return data
 }
 
-export function Settings({ timezone, pending, error, online, timezones, onTimezone }: { timezone: string; pending: string | null; error: boolean; online: boolean; timezones: string[]; onTimezone: (value: string) => void }) {
+export function Settings({ timezone, pending, error, online, timezones, onTimezone, theme, onTheme }: { timezone: string; pending: string | null; error: boolean; online: boolean; timezones: string[]; onTimezone: (value: string) => void; theme: 'system' | 'light' | 'dark'; onTheme: (value: 'system' | 'light' | 'dark') => void }) {
   return <section><div class="history-heading"><div><div class="eyebrow">AQUARIUM / SETTINGS</div><h1>Settings</h1></div></div>
+    <div class="system-section"><h2>Appearance</h2><div class="segment" role="group" aria-label="Appearance">{(['system', 'light', 'dark'] as const).map(value => <button type="button" class={theme === value ? 'selected' : ''} aria-pressed={theme === value} onClick={() => onTheme(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div></div>
     <div class="system-section"><h2>Device time</h2><label class="system-field">Timezone<select value={pending ?? timezone} disabled={!online || pending !== null} onChange={event => onTimezone(event.currentTarget.value)}>{timezones.map(zone => <option value={zone}>{zone.replaceAll('_', ' ')}</option>)}</select></label>{error && <p class="calibration-error" role="alert">Could not save timezone.</p>}</div>
     <div class="system-section"><h2>Network</h2><p>{online ? 'Wi-Fi connected' : 'Device offline'}</p><p>Wi-Fi credentials are not included in configuration backups.</p></div>
     <div class="system-section"><h2>Measurements and storage</h2><p>Temperature is enabled. pH, TDS and external history export are not enabled.</p><p>History is stored locally with fixed retention.</p></div>

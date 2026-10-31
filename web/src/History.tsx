@@ -16,24 +16,32 @@ const metrics: { value: Metric; label: string; unit: string; color: string }[] =
 ]
 const ranges: Range[] = ['1h', '24h', '7d', '30d', '1y']
 
-function Chart({ points, metric, timezone, events }: { points: Point[]; metric: typeof metrics[number]; timezone: string; events: JournalEntry[] }) {
+function Chart({ points, metric, timezone, events, compact }: { points: Point[]; metric: typeof metrics[number]; timezone: string; events: JournalEntry[]; compact: boolean }) {
   const container = useRef<HTMLDivElement>(null)
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme)
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTheme(document.documentElement.dataset.theme))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
   useEffect(() => {
     if (!container.current) return
     const target = container.current
     const dateFormat = new Intl.DateTimeFormat(undefined, { timeZone: timezone, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     const showPoints = points.filter(point => point[4] > 0).length < 2
+    const dark = theme === 'dark'
+    const height = compact ? 190 : 310
     const plot = new uPlot({
-      width: Math.max(220, target.clientWidth), height: 310,
+      width: Math.max(220, target.clientWidth), height,
       scales: { x: { time: true, range: () => [points[0][0], points[points.length - 1][0] + (points[1]?.[0] - points[0][0] || 1)] } },
       axes: [
-        { stroke: '#62766b', grid: { stroke: '#e5ece6', width: 1 }, values: (_plot, ticks) => ticks.map(tick => dateFormat.format(tick * 1000)), space: 140, size: 60 },
-        { stroke: '#62766b', grid: { stroke: '#e5ece6', width: 1 }, size: 55 },
+        { font: '11px "Montserrat Variable", sans-serif', stroke: dark ? '#9aacc3' : '#596d80', grid: { stroke: dark ? '#26384e' : '#dce4ec', width: 1 }, values: (_plot, ticks) => ticks.map(tick => dateFormat.format(tick * 1000)), space: 140, size: 60 },
+        { font: '11px "Montserrat Variable", sans-serif', stroke: dark ? '#9aacc3' : '#596d80', grid: { stroke: dark ? '#26384e' : '#dce4ec', width: 1 }, size: 55 },
       ],
       series: [
         { label: 'Time', value: (_plot, value) => value === null ? '--' : dateFormat.format(value * 1000) },
         { label: 'Minimum', stroke: '#a7b5ac', width: 1, dash: [4, 4], points: { show: showPoints } },
-        { label: 'Average', stroke: metric.color, width: 2, points: { show: showPoints } },
+        { label: 'Average', stroke: dark ? ({ temperature: '#2ed9e2', ph: '#d8a2ff', tds: '#ffc95c' })[metric.value] : metric.color, width: 2, points: { show: showPoints } },
         { label: 'Maximum', stroke: '#bf9c61', width: 1, dash: [4, 4], points: { show: showPoints } },
       ],
       hooks: { draw: [chart => {
@@ -50,16 +58,18 @@ function Chart({ points, metric, timezone, events }: { points: Point[]; metric: 
         chart.ctx.restore()
       }] },
     }, [points.map(point => point[0]), points.map(point => point[1]), points.map(point => point[2]), points.map(point => point[3])], target)
-    const observer = new ResizeObserver(() => plot.setSize({ width: Math.max(220, target.clientWidth), height: 310 }))
+    let active = true
+    void document.fonts.ready.then(() => { if (active) plot.redraw() })
+    const observer = new ResizeObserver(() => plot.setSize({ width: Math.max(220, target.clientWidth), height }))
     observer.observe(target)
-    return () => { observer.disconnect(); plot.destroy() }
-  }, [points, metric, timezone, events])
+    return () => { active = false; observer.disconnect(); plot.destroy() }
+  }, [points, metric, timezone, events, compact, theme])
   return <div class="history-plot" ref={container} role="img" aria-label={`${metric.label} history chart, minimum, average and maximum`} />
 }
 
-export function History({ timezone }: { timezone: string }) {
+export function History({ timezone, compact = false }: { timezone: string; compact?: boolean }) {
   const [metric, setMetric] = useState<Metric>('temperature')
-  const [range, setRange] = useState<Range>('1h')
+  const [range, setRange] = useState<Range>(compact ? '24h' : '1h')
   const [data, setData] = useState<Data | null>(null)
   const [storage, setStorage] = useState<Storage | null>(null)
   const [error, setError] = useState('')
@@ -137,17 +147,17 @@ export function History({ timezone }: { timezone: string }) {
   const formatEventTime = (timestamp: number) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(timestamp * 1000)
 
   return <section class="history-view">
-    <div class="history-heading"><div><div class="eyebrow">AQUARIUM / HISTORY</div><h1>Measurement history</h1></div><a class="history-export" href={`/api/history/export.csv?metric=${metric}&range=${range}`} download>Export CSV</a></div>
+    {!compact && <div class="history-heading"><div><div class="eyebrow">AQUARIUM / HISTORY</div><h1>Measurement history</h1></div><a class="history-export" href={`/api/history/export.csv?metric=${metric}&range=${range}`} download>Export CSV</a></div>}
     <div class="history-controls">
       <div class="segment" role="group" aria-label="Measurement">{metrics.map(item => <button type="button" class={metric === item.value ? 'selected' : ''} aria-pressed={metric === item.value} onClick={() => setMetric(item.value)}>{item.label}</button>)}</div>
       <div class="segment" role="group" aria-label="Time range">{ranges.map(item => <button type="button" class={range === item ? 'selected' : ''} aria-pressed={range === item} onClick={() => setRange(item)}>{item}</button>)}</div>
     </div>
     <div class="history-summary"><div><span>MINIMUM</span><strong>{format(minimum)}</strong></div><div><span>AVERAGE</span><strong>{format(average)}</strong></div><div><span>MAXIMUM</span><strong>{format(maximum)}</strong></div></div>
     <div class="history-chart-area">
-      {loading ? <p class="history-placeholder" role="status">Loading history...</p> : error ? <p class="history-placeholder" role="alert">{error}</p> : !data?.synchronized ? <p class="history-placeholder">Waiting for device time synchronization.</p> : !recorded.length ? <p class="history-placeholder">No {selected.label.toLowerCase()} readings in this range.</p> : <Chart points={data.points} metric={selected} timezone={timezone} events={visibleEvents} />}
+      {loading ? <p class="history-placeholder" role="status">Loading history...</p> : error ? <p class="history-placeholder" role="alert">{error}</p> : !data?.synchronized ? <p class="history-placeholder">Waiting for device time synchronization.</p> : !recorded.length ? <p class="history-placeholder">No {selected.label.toLowerCase()} readings in this range.</p> : <Chart points={data.points} metric={selected} timezone={timezone} events={visibleEvents} compact={compact} />}
     </div>
     {eventsError && <p class="calibration-warning">Journal events are unavailable.</p>}
-    {visibleEvents.length > 0 && <div class="history-events"><strong>Events in this range</strong>{visibleEvents.map(event => <div key={event.id}><time>{formatEventTime(event.timestamp!)}</time><span>{event.text}</span></div>)}</div>}
-    <div class="history-footer"><div><strong>Storage</strong><span>{storage ? `${(storage.usedBytes / 1048576).toFixed(2)} / ${(storage.totalBytes / 1048576).toFixed(2)} MB` : '--'}</span><small>{storage?.retention.join(' · ')}</small></div><button type="button" class="history-clear" disabled={clearing} onClick={() => void clear()}>Clear history</button></div>
+    {!compact && visibleEvents.length > 0 && <div class="history-events"><strong>Events in this range</strong>{visibleEvents.map(event => <div key={event.id}><time>{formatEventTime(event.timestamp!)}</time><span>{event.text}</span></div>)}</div>}
+    {!compact && <div class="history-footer"><div><strong>Storage</strong><span>{storage ? `${(storage.usedBytes / 1048576).toFixed(2)} / ${(storage.totalBytes / 1048576).toFixed(2)} MB` : '--'}</span><small>{storage?.retention.join(' · ')}</small></div><button type="button" class="history-clear" disabled={clearing} onClick={() => void clear()}>Clear history</button></div>}
   </section>
 }

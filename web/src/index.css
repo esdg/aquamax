@@ -1,2 +1,4 @@
-:root{font-family:'Trebuchet MS','Segoe UI',sans-serif;color:#20312f;background:#eef2ee;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
+@import '@fontsource-variable/montserrat/wght.css';
+:root{font-family:'Montserrat Variable','Trebuchet MS',sans-serif;color:#17283c;background:#eef3f6;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;--page:#eef3f6;--surface:#fff;--surface-raised:#f4f7fa;--border:#d6e0e9;--text:#17283c;--muted:#60748a;--accent:#086db9;--accent-soft:#e4f1fb;--field:#fff;--track:#dbe4ec;--chart:#167d9d;color-scheme:light}
+:root[data-theme=dark]{--page:#07111e;--surface:#0e1a29;--surface-raised:#142235;--border:#25374c;--text:#f2f6fc;--muted:#98aac0;--accent:#61b8ff;--accent-soft:#193454;--field:#101e30;--track:#34465e;--chart:#22d5e0;color-scheme:dark;background:var(--page);color:var(--text)}
 *{box-sizing:border-box}body{margin:0;min-width:280px}button,input{font:inherit}#app{min-height:100vh}h1,h2,p{margin:0}

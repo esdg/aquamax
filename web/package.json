@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test:icons": "node scripts/test-icons.mjs",
+    "test:offline": "node scripts/test-service-worker.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/montserrat": "^5.3.0",
+    "lucide-preact": "^1.66.0",
     "preact": "^11.0.2",
     "uplot": "^1.6.32"
   },
@@ -18,6 +21,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.19.2",
     "pngjs": "^7.0.0",
+    "sharp": "^0.35.5",
     "typescript": "~7.0.2",
     "vite": "^8.3.5"
   }
