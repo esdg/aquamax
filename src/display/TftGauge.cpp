@@ -139,7 +139,7 @@ public:
 			canvas_.drawString(setup.password, center, 131);
 			canvas_.setFont(&fonts::Font0);
 			canvas_.drawString("PORTAL", center, 153);
-			canvas_.drawString("http://192.168.4.1/setup", center, 169);
+			canvas_.drawString("http://aquamax.local/setup", center, 169);
 		} else {
 			canvas_.setFont(&fonts::Font2);
 			canvas_.drawString(setup.failed ? "Setup AP failed" : "Starting setup...", center, 110);

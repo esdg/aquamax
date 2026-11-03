@@ -14,7 +14,12 @@ import { Alerts } from './Alerts'
 import { Journal } from './Journal'
 import { Settings, System } from './System'
 import { Overview } from './Overview'
+import { SEGS } from './GaugeArc'
 import './app.css'
+
+const SEGMENTS = 90;
+const STROKE_WIDTH = 5;
+const R = 92;
 
 const stateLabels: Record<ProbeState, string> = {
   connected: 'Connected', disconnected: 'Probe disconnected', unstable: 'Unstable',
@@ -38,15 +43,36 @@ function Gauge({ name, unit, value, state, icon, mutedIcon, maximum }: {
   const active = state === 'connected' && value !== null && Number.isFinite(value)
   const angle = (135 + Math.max(0, Math.min(1, (value ?? 0) / maximum)) * 270) * Math.PI / 180
   const label = state === null ? 'Awaiting device' : state === 'connected' && !active ? 'Waiting for reading' : stateLabels[state]
+  const v = Math.min(1, Math.max(0, value ?? 0));
+const visible = Math.round(v * SEGMENTS);
   return (
     <article class={`metric ${active ? 'metric-active' : 'metric-muted'}`}>
       <div class="metric-heading"><span>{name}</span><span class="metric-number">{name === 'Temperature' ? '01' : name === 'pH' ? '02' : '03'}</span></div>
       <div class="gauge" role="img" aria-label={`${name}: ${active ? `${value!.toFixed(2)} ${unit}` : 'no reading'}, ${label}`}>
-        <svg class="gauge-ring" viewBox="0 0 200 200" aria-hidden="true">
-          <defs><linearGradient id="temperature-gradient" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#3c91bd"/><stop offset="0.48" stop-color="#59c4b1"/><stop offset="0.75" stop-color="#e4b85b"/><stop offset="1" stop-color="#d96d58"/></linearGradient></defs>
-          <path d="M 34.95 165.05 A 92 92 0 1 1 165.05 165.05" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" />
-          {active && <><path d="M 34.95 165.05 A 92 92 0 1 1 165.05 165.05" fill="none" stroke="url(#temperature-gradient)" stroke-width="5" stroke-linecap="round"/><circle cx={100 + 92 * Math.cos(angle)} cy={100 + 92 * Math.sin(angle)} r="4" fill="#fff" /></>}
-        </svg>
+      <svg className="gauge-ring" viewBox="0 0 200 200" aria-hidden="true">
+      {/* gray track */}
+      <path
+      style={{ strokeWidth: STROKE_WIDTH }} 
+        d="M 34.95 165.05 A 92 92 0 1 1 165.05 165.05"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={STROKE_WIDTH}
+        strokeLinecap="round"
+      />
+      {active && (
+        <>
+          {SEGS.slice(0, visible).map((s, i) => (
+            <path key={i} d={s.d} stroke={s.color} strokeWidth={STROKE_WIDTH} fill="none" style={{ strokeWidth: STROKE_WIDTH }}  />
+          ))}
+          <circle
+            cx={100 + R * Math.cos(angle)}
+            cy={100 + R * Math.sin(angle)}
+            r={STROKE_WIDTH + 2}
+            fill={document.documentElement.dataset.theme === 'light' ? '#17283C' : '#F2F6FC'}
+          />
+        </>
+      )}
+    </svg>
         <div class="gauge-content">
           <span class="probe-icon" dangerouslySetInnerHTML={{ __html: active ? icon : mutedIcon }} />
           <strong class="gauge-value">{active ? value!.toFixed(1) : '--'}</strong>

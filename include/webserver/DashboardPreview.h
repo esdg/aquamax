@@ -31,6 +31,7 @@ public:
 private:
     void startSetup();
     void serveSetup();
+    void serveSetupNetworks();
     void serveSetupStatus();
     void connectNetwork();
     void setTimezone();
@@ -115,6 +116,7 @@ private:
     bool connectQueued_ = false;
     bool attempting_ = false;
     bool setupActive_ = false;
+    bool mdnsStarted_ = false;
     bool connected_ = false;
     bool setupFailed_ = false;
     bool filesystemReady_ = false;

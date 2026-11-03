@@ -308,14 +308,17 @@ Open the serial monitor at 115200 baud and press reset if the startup message
 was missed. On first boot, connect a phone or computer to the
 `AquaMax-Setup-...` network using the **temporary setup password printed in the
 serial monitor** (also shown on the center screen with `web_tft`). Visit
-`http://192.168.4.1/setup` and enter the name and
-password of a 2.4 GHz Wi-Fi network. Return the phone or computer to that same
+`http://aquamax.local/setup`, or `http://192.168.4.1/setup` if the hostname
+does not resolve. Select a discovered 2.4 GHz Wi-Fi network and enter its
+password; hidden networks can be entered manually. Return the phone or computer to that same
 network and open the IP address printed in the monitor, or try
 `http://aquamax.local`. The setup access point closes 60 seconds after a
 successful connection. It can briefly disconnect when the ESP32 joins your
 network; reconnect to it to check the setup page, or look for the dashboard IP
 in the serial monitor. If connection fails, return to setup and retry; the
-previous saved network is not replaced until a connection succeeds. The serial
+previous saved network is not replaced until a connection succeeds. The
+connection attempt stops after a timeout so it does not interfere with setup
+network scans; submitting credentials starts a new attempt. The serial
 monitor reports a disconnect reason code without printing the Wi-Fi password.
 `NO_AP_FOUND` can indicate the wrong network name, an unavailable 2.4 GHz
 network or a weak signal; `AUTH_FAIL` or `HANDSHAKE_TIMEOUT` can indicate a
@@ -332,6 +335,10 @@ configured. The setup page is accessible only through the temporary access
 point, which has a randomly generated password; it is not a substitute for
 TLS. The dashboard, temperature, WebSocket streaming and HTTP fallback have
 been tested on the ESP32.
+
+For a browser-only preview of the setup page with simulated networks, run
+`node web/scripts/preview-setup.mjs` and open `http://127.0.0.1:4174/setup`.
+This preview does not connect to or configure the ESP32.
 
 `GET /api/state` and `ws://aquamax.local:81/ws` return temperature value or
 `null` and its probe state, disabled pH and TDS values, Wi-Fi connection state,

@@ -16,6 +16,7 @@
 #include "sensors/ClockStatus.h"
 #include "sensors/HistoryAggregate.h"
 #include "display/TftGauge.h"
+#include "webserver/SetupPage.h"
 
 namespace aquamax {
 namespace {
@@ -142,7 +143,7 @@ void DashboardPreview::begin() {
     WiFi.onEvent([this](arduino_event_id_t, arduino_event_info_t info) {
         disconnectReason_.store(info.wifi_sta_disconnected.reason);
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-    server_.on("/", HTTP_GET, [this] { serveAsset("/index.html", "text/html"); });
+    server_.on("/", HTTP_GET, [this] { if (onSetupNetwork()) serveSetup(); else serveAsset("/index.html", "text/html"); });
     server_.on("/app.js", HTTP_GET, [this] { serveAsset("/app.js", "application/javascript"); });
     server_.on("/app.css", HTTP_GET, [this] { serveAsset("/app.css", "text/css"); });
     server_.on("/manifest.webmanifest", HTTP_GET, [this] { serveAsset("/manifest.webmanifest", "application/manifest+json"); });
@@ -186,6 +187,7 @@ void DashboardPreview::begin() {
     }, [this] { uploadAsset(); });
     server_.on("/setup", HTTP_GET, [this] { serveSetup(); });
     server_.on("/setup", HTTP_POST, [this] { connectNetwork(); });
+    server_.on("/setup/networks", HTTP_GET, [this] { serveSetupNetworks(); });
     server_.on("/setup/status", HTTP_GET, [this] { serveSetupStatus(); });
     server_.on(FallbackUri(), HTTP_ANY, [this] {
         if (onSetupNetwork()) {
@@ -275,7 +277,8 @@ void DashboardPreview::startSetup() {
 #endif
     setupActive_ = true;
     dns_.start(53, "*", WiFi.softAPIP());
-    Serial.printf("Setup Wi-Fi: %s\nSetup password: %s\nOpen http://192.168.4.1/setup\n", name, password);
+    if (!mdnsStarted_) mdnsStarted_ = MDNS.begin("aquamax");
+    Serial.printf("Setup Wi-Fi: %s\nSetup password: %s\nOpen http://aquamax.local/setup (or http://192.168.4.1/setup)\n", name, password);
 }
 
 bool DashboardPreview::onSetupNetwork() {
@@ -287,11 +290,41 @@ void DashboardPreview::serveSetup() {
         server_.send(404, "text/plain", "Not found");
         return;
     }
-    String page = F("<!doctype html><html lang='en'><meta name='viewport' content='width=device-width,initial-scale=1'><title>AquaMax Wi-Fi setup</title><body><main><h1>AquaMax Wi-Fi setup</h1><p>Credentials are sent without encryption on the setup network.</p><form method='post' action='/setup'><input type='hidden' name='token' value='");
-    page += setupToken_;
-    page += F("'><label>Wi-Fi network name <input name='ssid' maxlength='32' required autocomplete='off'></label><br><label>Wi-Fi password <input name='password' type='password' maxlength='63' autocomplete='off'></label><br><button type='submit'>Connect</button></form></main></body></html>");
+    String page(FPSTR(setupPage));
+    page.replace("__SETUP_TOKEN__", setupToken_);
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(200, "text/html", page);
+}
+
+void DashboardPreview::serveSetupNetworks() {
+    if (!onSetupNetwork()) { server_.send(404, "text/plain", "Not found"); return; }
+    server_.sendHeader("Cache-Control", "no-store");
+    if (attempting_ || connectQueued_) { server_.send(409, "application/json", "{\"state\":\"connecting\"}"); return; }
+    int count = WiFi.scanComplete();
+    if (count != WIFI_SCAN_RUNNING && (count == WIFI_SCAN_FAILED || server_.hasArg("refresh"))) {
+        WiFi.scanDelete();
+        count = WiFi.scanNetworks(true);
+    }
+    if (count == WIFI_SCAN_RUNNING) { server_.send(200, "application/json", "{\"state\":\"scanning\"}"); return; }
+    if (count < 0) { server_.send(503, "application/json", "{\"state\":\"error\"}"); return; }
+    String response = F("{\"state\":\"ready\",\"networks\":[");
+    bool first = true;
+    for (int index = 0; index < count; ++index) {
+        const String ssid = WiFi.SSID(index);
+        if (!ssid.length() || ssid.length() > 32) continue;
+        bool valid = true;
+        for (unsigned character = 0; character < ssid.length(); ++character) if (static_cast<unsigned char>(ssid[character]) < 0x20) valid = false;
+        for (int previous = 0; previous < index; ++previous) if (WiFi.SSID(previous) == ssid) valid = false;
+        if (!valid) continue;
+        if (!first) response += ',';
+        first = false;
+        response += F("{\"ssid\":"); response += jsonText(ssid.c_str());
+        response += F(",\"rssi\":"); response += String(WiFi.RSSI(index));
+        response += F(",\"secure\":"); response += WiFi.encryptionType(index) == WIFI_AUTH_OPEN ? "false" : "true";
+        response += '}';
+    }
+    response += F("]}");
+    server_.send(200, "application/json", response);
 }
 
 void DashboardPreview::serveSetupStatus() {
@@ -1021,9 +1054,11 @@ void DashboardPreview::updateNetwork(uint32_t now) {
             socket_.broadcastTXT(state);
         }
     }
-    if (connectQueued_ && now - connectRequested_ >= responseGraceMs) {
+    if (connectQueued_ && now - connectRequested_ >= responseGraceMs && WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
         connectQueued_ = false;
+        WiFi.scanDelete();
         WiFi.disconnect(false, false);
+        WiFi.setAutoReconnect(true);
         const wl_status_t startStatus = WiFi.begin(pendingSsid_.c_str(), pendingPassword_.c_str());
         attemptStarted_ = now;
         attempting_ = true;
@@ -1055,7 +1090,8 @@ void DashboardPreview::updateNetwork(uint32_t now) {
             pendingSsid_ = "";
             pendingPassword_ = "";
         }
-        if (!MDNS.begin("aquamax")) Serial.println("mDNS unavailable; use the IP address.");
+        if (!mdnsStarted_) mdnsStarted_ = MDNS.begin("aquamax");
+        if (!mdnsStarted_) Serial.println("mDNS unavailable; use the IP address.");
         configTzTime(timezone_->rule, "pool.ntp.org", "time.cloudflare.com");
         Serial.print("Dashboard: http://");
         Serial.println(WiFi.localIP());
@@ -1064,7 +1100,7 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         connected_ = false;
         attempting_ = true;
         attemptStarted_ = now;
-        MDNS.end();
+        if (!setupActive_ && mdnsStarted_) { MDNS.end(); mdnsStarted_ = false; }
         Serial.println("Wi-Fi disconnected; reconnecting.");
     }
 #if defined(AQUAMAX_TFT)
@@ -1076,7 +1112,8 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         displayWifiTimedOut_.store(true);
 #endif
         const wl_status_t timeoutStatus = WiFi.status();
-        if (pendingSsid_.length()) WiFi.disconnect(false, false);
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
         pendingSsid_ = "";
         pendingPassword_ = "";
         setupFailed_ = true;
@@ -1085,6 +1122,7 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         startSetup();
     }
     if (online && setupActive_ && now - connectedSince_ >= setupGraceMs) {
+        WiFi.scanDelete();
         dns_.stop();
         WiFi.softAPdisconnect(true);
         setupActive_ = false;
