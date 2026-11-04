@@ -43,7 +43,11 @@ private:
 
 class DisplaySet {
 public:
-	DisplaySet() : base_(&displays_[0]), canvas_(&displays_[0]), logo_(&displays_[1]), temperature_({0.0f, 40.0f}) {
+	DisplaySet() : base_(&displays_[0]), canvas_(&displays_[0]), logo_(&displays_[1]), temperature_({0.0f, 40.0f})
+#if defined(AQUAMAX_PH_PROBE)
+		, ph_({0.0f, 14.0f})
+#endif
+	{
 		auto busConfig = bus_.config();
 		busConfig.spi_host = SPI2_HOST;
 		busConfig.spi_mode = 0;
@@ -153,6 +157,9 @@ public:
 			previousSetup_ = {};
 			mode_ = Mode::gauges;
 			drawn_ = false;
+#if defined(AQUAMAX_PH_PROBE)
+			phDrawn_ = false;
+#endif
 			drawStatic(false, false, icons::drop_off_32, "pH", "pH");
 			drawValue({}, "Not enabled");
 			canvas_.pushSprite(&displays_[1], 0, 0);
@@ -173,6 +180,19 @@ public:
 		drawValue(frame, status);
 		canvas_.pushSprite(&displays_[0], 0, 0);
 		drawn_ = true;
+#if defined(AQUAMAX_PH_PROBE)
+		if (!phDrawn_ || nowMs - lastPhFrameMs_ >= 1000) {
+			lastPhFrameMs_ = nowMs;
+			const bool phFresh = snapshot.ph.hasValue && nowMs - snapshot.ph.lastSeenMs < 3000;
+			const GaugeFrame phFrame = ph_.update(snapshot.ph.state, phFresh, snapshot.ph.value, false, nowMs);
+			drawStatic(phFrame.hasValue, false, phFrame.hasValue ? icons::drop_32 : icons::drop_off_32, "pH", "pH");
+			const char* phStatus = phFrame.state == ProbeState::connected ? "Calibrate" : phFrame.state == ProbeState::disabled ? "Not enabled" : "Check signal";
+			drawValue(phFrame, phStatus);
+			canvas_.pushSprite(&displays_[1], 0, 0);
+			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
+			phDrawn_ = true;
+		}
+#endif
 	}
 
 private:
@@ -255,6 +275,11 @@ private:
 	lgfx::LGFX_Sprite canvas_;
 	lgfx::LGFX_Sprite logo_;
 	GaugeModel temperature_;
+#if defined(AQUAMAX_PH_PROBE)
+	GaugeModel ph_;
+	uint32_t lastPhFrameMs_ = 0;
+	bool phDrawn_ = false;
+#endif
 	TftSetupInfo previousSetup_;
 	Mode mode_ = Mode::none;
 	uint32_t lastSplashMs_ = 0;

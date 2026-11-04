@@ -6,7 +6,12 @@ type Temperature = {
   stable: boolean; lastSeenSecondsAgo: number | null; offsetC: number
   calibrated: boolean; timestamp: number | null; storageError: boolean
 }
-type CalibrationData = { temperature: Temperature; ph: { state: ProbeState }; tds: { state: ProbeState } }
+type PhCalibration = {
+  state: ProbeState; enabled?: boolean; adcVolts?: number | null; boardVolts?: number | null
+  stable?: boolean; calibrated?: boolean; storageError?: boolean; active?: boolean
+  points?: { ph: number; boardVolts: number }[]
+}
+type CalibrationData = { temperature: Temperature; ph: PhCalibration; tds: { state: ProbeState } }
 
 const labels: Record<ProbeState, string> = {
   connected: 'Connected', disconnected: 'Disconnected', unstable: 'Unstable',
@@ -16,6 +21,7 @@ const labels: Record<ProbeState, string> = {
 export function Calibration({ timezone }: { timezone: string }) {
   const [data, setData] = useState<CalibrationData | null>(null)
   const [reference, setReference] = useState('')
+  const [phReference, setPhReference] = useState('6.86')
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [notice, setNotice] = useState('')
@@ -56,6 +62,23 @@ export function Calibration({ timezone }: { timezone: string }) {
     } catch (reason) { setActionError(reason instanceof Error ? reason.message : 'Calibration could not be saved') }
     finally { setBusy(false) }
   }
+  const ph = data?.ph
+  const phPoints = ph?.points ?? []
+  const phReferenceValue = Number(phReference)
+  const canCapturePh = ph?.active && ph.state === 'connected' && ph.stable && ph.boardVolts != null &&
+    phReference.trim() !== '' && Number.isFinite(phReferenceValue) && phReferenceValue >= 0 && phReferenceValue <= 14
+  const changePh = async (action: 'start' | 'capture' | 'save' | 'cancel') => {
+    setBusy(true); setActionError(''); setNotice('')
+    try {
+      const body = new URLSearchParams(action === 'capture' ? { action, referencePh: phReference } : { action })
+      const response = await fetch('/api/calibration/ph', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+      if (!response.ok) throw new Error(await response.text())
+      if (action === 'save') setNotice('pH calibration saved.')
+      if (action === 'cancel') setNotice('pH calibration cancelled.')
+      setRevision(value => value + 1)
+    } catch (reason) { setActionError(reason instanceof Error ? reason.message : 'pH calibration could not be updated') }
+    finally { setBusy(false) }
+  }
   const date = temperature?.timestamp ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(temperature.timestamp * 1000) : 'Date unavailable'
 
   return <section class="calibration-view">
@@ -74,10 +97,22 @@ export function Calibration({ timezone }: { timezone: string }) {
           <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={!canCapture || busy}>Save calibration</button><button type="button" class="calibration-reset" disabled={!temperature || busy || (!temperature.calibrated && !temperature.storageError)} onClick={() => void save('reset')}>Reset</button></div>
         </form>
         {error && <p class="calibration-error" role="alert">{error}</p>}{actionError && <p class="calibration-error" role="alert">{actionError}</p>}{notice && <p class="calibration-notice" role="status">{notice}</p>}
+        {ph?.enabled && <div class="ph-calibration">
+          <div class="calibration-section-title"><div><span class="device-label">02 / pH</span><h2>Buffer calibration</h2></div><span class={`probe-badge ${ph.state === 'connected' ? 'ready' : ''}`}>{ph.state === 'connected' ? 'Signal available' : labels[ph.state]}</span></div>
+          <p class="calibration-instruction">Rinse the probe between buffers and allow it to settle for at least 60 seconds in each solution.</p>
+          <div class="calibration-readings"><div><span>BOARD VOLTAGE</span><strong>{ph.boardVolts != null ? `${ph.boardVolts.toFixed(3)} V` : '--'}</strong></div><div><span>STABILITY</span><strong>{ph.stable ? 'Stable' : 'Waiting'}</strong></div><div><span>CALIBRATION</span><strong>{ph.calibrated ? 'Saved' : 'Required'}</strong></div></div>
+          {ph.storageError && <p class="calibration-error" role="alert">pH calibration storage is unavailable.</p>}
+          {!ph.active ? <div class="calibration-actions"><button class="calibration-primary" type="button" disabled={busy || ph.storageError} onClick={() => void changePh('start')}>Start calibration</button></div> : <form class="calibration-form" onSubmit={event => { event.preventDefault(); void changePh('capture') }}>
+            <label for="ph-reference">Buffer pH</label>
+            <div class="reference-input"><input id="ph-reference" type="number" step="0.01" min="0" max="14" inputMode="decimal" value={phReference} onInput={event => setPhReference(event.currentTarget.value)} /><span>pH</span></div>
+            <small>{phPoints.length ? `Captured: ${phPoints.map(point => point.ph.toFixed(2)).join(', ')}` : 'No buffers captured'}</small>
+            <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={!canCapturePh || busy}>Capture buffer</button><button type="button" disabled={phPoints.length < 2 || busy} onClick={() => void changePh('save')}>Save calibration</button><button type="button" class="calibration-reset" disabled={busy} onClick={() => void changePh('cancel')}>Cancel</button></div>
+          </form>}
+        </div>}
       </div>
       <aside class="probe-health"><span class="device-label">PROBE HEALTH</span><h2>Channel status</h2>
         <div class="health-row"><div><strong>Temperature</strong><small>{temperature?.lastSeenSecondsAgo != null ? `Last seen ${temperature.lastSeenSecondsAgo} s ago` : 'No valid reading yet'}</small><small>{temperature?.calibrated ? `Calibrated: ${date}` : 'Factory offset'}</small></div><span class={`probe-badge ${temperature?.state === 'connected' ? 'ready' : ''}`}>{temperature ? labels[temperature.state] : 'Waiting'}</span></div>
-        <div class="health-row"><div><strong>pH</strong><small>Calibration unavailable</small></div><span class="probe-badge">{data ? labels[data.ph.state] : 'Waiting'}</span></div>
+        <div class="health-row"><div><strong>pH</strong><small>{!ph?.enabled ? 'Not enabled' : ph.calibrated ? 'Calibration saved' : 'Calibration required'}</small></div><span class="probe-badge">{!ph ? 'Waiting' : ph.state === 'connected' ? 'Signal available' : labels[ph.state]}</span></div>
         <div class="health-row"><div><strong>TDS</strong><small>Calibration unavailable</small></div><span class="probe-badge">{data ? labels[data.tds.state] : 'Waiting'}</span></div>
       </aside>
     </div>

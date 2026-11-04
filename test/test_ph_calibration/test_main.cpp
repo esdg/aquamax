@@ -116,6 +116,42 @@ void test_uncalibrated_and_disabled_channel_never_publish_ph() {
     TEST_ASSERT_FALSE(disabled.hasValue);
 }
 
+void test_equal_resistor_divider_and_stability_reset() {
+    aquamax::PhVoltageLimits limits;
+    limits.dividerRatio = 0.5f;
+    aquamax::PhChannel channel;
+    for (unsigned index = 0; index < 8; ++index) {
+        const auto reading = channel.update(1.26f, limits, {}, true);
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.52f, reading.boardVolts);
+        TEST_ASSERT_EQUAL(index == 7, reading.stable);
+        TEST_ASSERT_FALSE(reading.hasValue);
+    }
+    TEST_ASSERT_FALSE(channel.update(1.30f, limits, {}, true).stable);
+    TEST_ASSERT_FALSE(channel.update(0.0f, limits, {}, true).stable);
+    TEST_ASSERT_FALSE(channel.update(1.26f, limits, {}, true).stable);
+}
+
+void test_calibration_session_requires_distinct_valid_points_and_can_cancel() {
+    aquamax::PhVoltageLimits limits;
+    limits.dividerRatio = 0.5f;
+    aquamax::PhCalibrationSession session;
+    aquamax::PhCalibration result;
+    TEST_ASSERT_FALSE(session.capture(6.86f, 2.5f, limits));
+    session.start();
+    TEST_ASSERT_FALSE(session.fit(limits, {}, result));
+    TEST_ASSERT_TRUE(session.capture(6.86f, 2.5f, limits));
+    TEST_ASSERT_FALSE(session.capture(7.0f, 2.4f, limits));
+    TEST_ASSERT_TRUE(session.capture(6.86f, 2.52f, limits));
+    TEST_ASSERT_EQUAL_UINT32(1, session.count());
+    TEST_ASSERT_TRUE(session.capture(4.01f, 3.1f, limits));
+    TEST_ASSERT_TRUE(session.fit(limits, {}, result));
+    TEST_ASSERT_TRUE(result.valid);
+    session.cancel();
+    TEST_ASSERT_FALSE(session.active());
+    TEST_ASSERT_EQUAL_UINT32(0, session.count());
+    TEST_ASSERT_FALSE(session.fit(limits, {}, result));
+}
+
 void test_temperature_compensation_and_explicit_fallback() {
     aquamax::CompensationTemperature temperature;
     TEST_ASSERT_TRUE(aquamax::resolveCompensationTemperature(false, 99.0f, 25.0f, temperature));
@@ -149,6 +185,8 @@ int main() {
     RUN_TEST(test_store_preserves_first_baseline_and_rejects_failures);
     RUN_TEST(test_fault_hides_value_before_debounce_and_recovers);
     RUN_TEST(test_uncalibrated_and_disabled_channel_never_publish_ph);
+    RUN_TEST(test_equal_resistor_divider_and_stability_reset);
+    RUN_TEST(test_calibration_session_requires_distinct_valid_points_and_can_cancel);
     RUN_TEST(test_temperature_compensation_and_explicit_fallback);
     return UNITY_END();
 }

@@ -88,4 +88,35 @@ bool phSlopeHealth(const PhCalibration& calibration, float& percent) {
     return true;
 }
 
+void PhCalibrationSession::start() {
+    count_ = 0;
+    active_ = true;
+}
+
+void PhCalibrationSession::cancel() {
+    count_ = 0;
+    active_ = false;
+}
+
+bool PhCalibrationSession::capture(float ph, float boardVolts, const PhVoltageLimits& limits) {
+    float checkedVolts = 0.0f;
+    if (!active_ || !std::isfinite(ph) || ph < 0.0f || ph > 14.0f ||
+        classifyPhVoltage(boardVolts * limits.dividerRatio, limits, checkedVolts) != PhVoltageStatus::valid) return false;
+    for (std::size_t index = 0; index < count_; ++index) {
+        const float difference = std::fabs(points_[index].ph - ph);
+        if (difference < 0.001f) {
+            points_[index].boardVolts = boardVolts;
+            return true;
+        }
+        if (difference < 1.0f) return false;
+    }
+    if (count_ == 3) return false;
+    points_[count_++] = {ph, boardVolts};
+    return true;
+}
+
+bool PhCalibrationSession::fit(const PhVoltageLimits& limits, const PhCalibration& previous, PhCalibration& result) const {
+    return active_ && fitPhCalibration(points_, count_, limits, previous, result);
+}
+
 } // namespace aquamax

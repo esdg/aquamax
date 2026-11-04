@@ -34,4 +34,20 @@ bool fitPhCalibration(const PhPoint* points, std::size_t count, const PhVoltageL
 bool phFromVoltage(float adcVolts, const PhVoltageLimits& limits, const PhCalibration& calibration, float& ph);
 bool phSlopeHealth(const PhCalibration& calibration, float& percent);
 
+class PhCalibrationSession {
+public:
+    void start();
+    void cancel();
+    bool capture(float ph, float boardVolts, const PhVoltageLimits& limits);
+    bool fit(const PhVoltageLimits& limits, const PhCalibration& previous, PhCalibration& result) const;
+    bool active() const { return active_; }
+    std::size_t count() const { return count_; }
+    const PhPoint* points() const { return points_; }
+
+private:
+    PhPoint points_[3] = {};
+    std::size_t count_ = 0;
+    bool active_ = false;
+};
+
 } // namespace aquamax

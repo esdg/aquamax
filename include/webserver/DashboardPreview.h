@@ -14,6 +14,11 @@
 #include "display/TftGauge.h"
 #endif
 #include "hardware/TemperatureProbe.h"
+#if defined(AQUAMAX_PH_PROBE)
+#include "hardware/Ads1115.h"
+#include "sensors/PhChannel.h"
+#include "settings/PhCalibrationStore.h"
+#endif
 #include "sensors/SensorSnapshot.h"
 #include "sensors/TimeZone.h"
 #include "settings/TemperatureCalibrationStore.h"
@@ -40,6 +45,9 @@ private:
     void clearHistory();
     void serveCalibration();
     void changeTemperatureCalibration();
+#if defined(AQUAMAX_PH_PROBE)
+    void changePhCalibration();
+#endif
     void serveAlerts();
     void changeAlerts();
     void updateAlerts(uint32_t now);
@@ -58,6 +66,9 @@ private:
     void serveState();
     String stateJson();
     void updateNetwork(uint32_t now);
+#if defined(AQUAMAX_PH_PROBE)
+    void updatePhProbe(uint32_t now);
+#endif
     static void networkTask(void* context);
     void serveAsset(const char* path, const char* contentType);
     bool onSetupNetwork();
@@ -66,6 +77,24 @@ private:
     WebSocketsServer socket_{81};
     DNSServer dns_;
     TemperatureProbe temperature_{pins::oneWire};
+#if defined(AQUAMAX_PH_PROBE)
+    Ads1115 phAdc_{Wire};
+    PhChannel phChannel_;
+    PhReading phReading_;
+    PhVoltageLimits phVoltageLimits_{0.5f, 3.3f, 0.0f, 5.2f, 0.05f};
+    PhCalibrationStore phCalibrationStore_;
+    PhCalibration phCalibration_;
+    PhCalibrationSession phCalibrationSession_;
+    uint32_t lastPhSampleMs_ = 0;
+    float phAdcVolts_ = 0.0f;
+    bool phWireReady_ = false;
+    bool phConversionPending_ = false;
+    bool phAdcHasValue_ = false;
+    bool phAdcError_ = false;
+    bool phCalibrationError_ = false;
+    bool phCalibrationWritten_ = false;
+    uint32_t lastPhCalibrationWriteMs_ = 0;
+#endif
     SensorSnapshotBuilder sensorBuilder_;
     SensorSnapshot snapshot_;
     AlertSettingsStore alertSettingsStore_;

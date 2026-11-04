@@ -1,3 +1,4 @@
+.ph-calibration{margin-top:42px;padding-top:28px;border-top:1px solid var(--border)}
 .shell{min-height:100vh;display:flex;flex-direction:column;background:repeating-linear-gradient(0deg,#f3f6f2 0,#f3f6f2 35px,#edf2ed 36px)}
 .topbar{height:74px;background:#183b38;color:#f5faf6;display:flex;align-items:center;justify-content:space-between;padding:0 max(24px,calc((100% - 1120px)/2));gap:16px}
 .brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:700;line-height:1}.brand small{display:block;color:#a8c4b6;font-size:9px;font-weight:700;margin-top:6px;letter-spacing:0}.brand-mark{display:grid;place-items:center;width:34px;height:34px;background:#cbe79e;color:#173b36;font-family:Georgia,serif;font-size:25px;border-radius:4px}

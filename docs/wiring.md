@@ -27,9 +27,9 @@ connect a 5 V signal directly to an ESP32 GPIO or a 3.3 V-powered ADS1115.
 | GPIO 11 | SDA / MOSI / DIN on all three TFTs | Shared SPI data to the screens; not I2C SDA. |
 | GPIO 13 | DC / A0 on all three TFTs | Shared display data/command signal. |
 | GPIO 14 | RST / RES on all three TFTs | Shared display reset. |
-| GPIO 15 | CS on the temperature TFT | Only the temperature screen. |
+| GPIO 15 | CS on the TDS TFT | Only the TDS screen. |
 | GPIO 16 | CS on the pH TFT | Only the pH screen. |
-| GPIO 17 | CS on the TDS TFT | Only the TDS screen. |
+| GPIO 17 | CS on the temperature TFT | Only the temperature screen. |
 | GPIO 8 | SDA on the ADS1115 | I2C data. |
 | GPIO 9 | SCL on the ADS1115 | I2C clock. |
 | GPIO 10 | DS18B20 data via GX16 pin 6 | Add a pull-up to 3.3 V; see below. |
@@ -74,6 +74,12 @@ pin can be tied to a supply without checking the module.
 | A2, A3 | Leave unconnected for now |
 | ALERT / RDY | Leave unconnected for now |
 
+The opt-in `web_tft_ph_probe` environment uses A1 for pH instead of A0. The
+tested setup uses a 10 kohm resistor from `Po` to A1 and another 10 kohm
+resistor from A1 to common ground, for a nominal ratio of 0.5. TDS on A2 is
+not read or powered by this firmware. Its analog output must remain isolated
+until its voltages and power-off behavior have been verified.
+
 SDA and SCL require pull-ups to **3.3 V**, typically 4.7 kohm each. Check
 whether the breakout already has suitable pull-ups before adding them; avoid
 pull-ups to 5 V or unnecessarily low combined resistance. The firmware's ADC
@@ -83,7 +89,10 @@ The ADC gain setting does not protect its inputs. Keep each analog input within
 the normal supply rails, including startup, shutdown and transients. The
 datasheet's VDD + 0.3 V limit is an absolute maximum, not a target voltage.
 Do not connect a module with an unknown output range until it is measured and
-the appropriate input circuit has been designed.
+the appropriate input circuit has been designed. A divider does not protect an
+unpowered ADC from a separately powered pH board. Verify power sequencing and
+back-power protection; a single steady-state measurement does not establish a
+safe output range or transient behavior.
 
 ### pH board and A0 filter
 

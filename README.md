@@ -33,9 +33,11 @@ notification integrations remain unfinished.
   provisional 0-40 C temperature scale. The temperature gauge was reported
   visible on one GC9A01 screen; the other screens remain untested. `web_preview`
   still leaves display GPIO unused.
-- PH-4502C-style negative-slope calibration and first-calibration-relative slope
-  health have native tests and a separate NVS record. The calibration wizard,
-  physical ADC integration and real-board NVS persistence remain untested.
+- The opt-in `web_tft_ph_probe` build reads ADS1115 A1 using a 0.5 divider
+  ratio and provides a staged two- or three-buffer pH calibration. Its A1
+  voltage responded to a vinegar test on one board. Calibrated pH accuracy,
+  persistence on the real device and the pH TFT remain unverified. A plausible
+  voltage cannot prove the probe is connected. TDS remains disabled.
 - The dashboard provides a stable-reading-gated temperature reference
   adjustment and probe status. Its calibration record has native persistence
   tests; an actual reference calibration and physical NVS persistence still
@@ -194,6 +196,13 @@ To build the dashboard with the optional TFT renderer instead, use:
 ```powershell
 & "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" run -e web_tft
 ```
+
+For the A1 pH setup described in the wiring guide, build `web_tft_ph_probe`
+instead. It assumes two equal 10 kohm divider resistors, an ADS1115 at 0x48,
+and a separately verified board output range. It reports no numeric pH until
+two or three distinct, stable buffer readings have been captured and saved on
+the Calibration page. pH temperature compensation is not implemented. The
+system configuration export does not currently include pH calibration.
 
 This initializes all three proposed TFT chip selects and the shared reset,
 clock, data and DC pins. It does not initialize GPIO 18 or drive `BLK`.
@@ -458,7 +467,7 @@ voltage ranges, backlight current and cable pin numbering before use.
 | Function | Proposed GPIO |
 | --- | --- |
 | TFT SCLK, MOSI, DC, reset | 12, 11, 13, 14 |
-| TFT CS: temperature, pH, TDS | 15, 16, 17 |
+| TFT CS: temperature, pH, TDS | 17, 16, 15 |
 | ADS1115 SDA, SCL | 8, 9 |
 | DS18B20 data | 10 |
 | TDS power-switch control | 4 |

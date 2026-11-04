@@ -18,6 +18,8 @@ struct TemperatureReading {
 struct SensorReading {
     ProbeState state = ProbeState::disabled;
     bool hasValue = false;
+    float value = 0.0f;
+    uint32_t lastSeenMs = 0;
 };
 
 struct SensorSnapshot {

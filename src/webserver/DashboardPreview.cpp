@@ -15,6 +15,9 @@
 #include "config/pins.h"
 #include "sensors/ClockStatus.h"
 #include "sensors/HistoryAggregate.h"
+#if defined(AQUAMAX_PH_PROBE)
+#include "sensors/AdcMath.h"
+#endif
 #include "display/TftGauge.h"
 #include "webserver/SetupPage.h"
 
@@ -116,6 +119,12 @@ bool allowedOrigin(const String& origin) {
 }
 
 void DashboardPreview::begin() {
+#if defined(AQUAMAX_PH_PROBE)
+    phWireReady_ = Wire.begin(pins::i2cSda, pins::i2cScl);
+    if (phWireReady_) Wire.setTimeOut(25);
+    else phAdcError_ = true;
+    phCalibrationError_ = phCalibrationStore_.load(phCalibration_) == PhCalibrationLoad::error;
+#endif
 #if defined(AQUAMAX_TFT)
     tftRendererReady_ = beginTftGauges();
     if (tftRendererReady_) showTftSplash(0);
@@ -160,6 +169,9 @@ void DashboardPreview::begin() {
     server_.on("/api/history", HTTP_DELETE, [this] { clearHistory(); });
     server_.on("/api/calibration", HTTP_GET, [this] { serveCalibration(); });
     server_.on("/api/calibration/temp", HTTP_POST, [this] { changeTemperatureCalibration(); });
+#if defined(AQUAMAX_PH_PROBE)
+    server_.on("/api/calibration/ph", HTTP_POST, [this] { changePhCalibration(); });
+#endif
     server_.on("/api/alerts", HTTP_GET, [this] { serveAlerts(); });
     server_.on("/api/alerts", HTTP_POST, [this] { changeAlerts(); });
     server_.on("/api/events", HTTP_GET, [this] { serveEvents(); });
@@ -467,7 +479,9 @@ String DashboardPreview::stateJson() {
     response += snapshot.temperature.hasValue ? String(snapshot.temperature.valueC, 2) : String("null");
     response += F("},\"ph\":{\"state\":\"");
     response += stateName(snapshot.ph.state);
-    response += F("\",\"value\":null},\"tds\":{\"state\":\"");
+    response += F("\",\"value\":");
+    response += snapshot.ph.hasValue && millis() - snapshot.ph.lastSeenMs < 3000 ? String(snapshot.ph.value, 2) : String("null");
+    response += F("},\"tds\":{\"state\":\"");
     response += stateName(snapshot.tds.state);
     response += F("\",\"value\":null},\"wifi\":\"");
     response += WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
@@ -522,6 +536,13 @@ void DashboardPreview::serveSystem() {
     response += F(",\"filesystemUsedBytes\":"); response += String(filesystemReady_ ? LittleFS.usedBytes() : 0);
     response += F(",\"filesystemTotalBytes\":"); response += String(filesystemReady_ ? LittleFS.totalBytes() : 0);
     response += F(",\"journalReady\":"); response += journalReady_ ? "true" : "false";
+#if defined(AQUAMAX_PH_PROBE)
+    response += F(",\"phAdc\":{\"status\":");
+    response += phAdcError_ ? "\"error\"" : phAdcHasValue_ ? "\"ready\"" : "\"waiting\"";
+    response += F(",\"channel\":1,\"adcVolts\":");
+    response += phAdcHasValue_ ? String(phAdcVolts_, 4) : String("null");
+    response += '}';
+#endif
 #if defined(AQUAMAX_TFT)
     response += F(",\"tftRenderer\":"); response += tftRendererReady_ ? "\"initialized\"" : "\"unavailable\"";
 #endif
@@ -815,7 +836,7 @@ void DashboardPreview::updateHistory(uint32_t now) {
         portEXIT_CRITICAL(&snapshotMutex_);
         const bool validTemperature = snapshot.temperature.hasValue && millis() - snapshot.temperature.lastSeenMs < 3000;
         if (!temperatureHistory_.sample(clock.unixSeconds, validTemperature, snapshot.temperature.valueC) ||
-            !phHistory_.sample(clock.unixSeconds, false, 0) ||
+            !phHistory_.sample(clock.unixSeconds, snapshot.ph.hasValue && millis() - snapshot.ph.lastSeenMs < 3000, snapshot.ph.value) ||
             !tdsHistory_.sample(clock.unixSeconds, false, 0)) {
             Serial.println("History: sampling failed; check storage.");
         }
@@ -880,10 +901,81 @@ void DashboardPreview::serveCalibration() {
     response += temperatureCalibration_.timestamp ? String(temperatureCalibration_.timestamp) : String("null");
     response += F(",\"storageError\":");
     response += temperatureCalibrationError_ ? "true" : "false";
-    response += F("},\"ph\":{\"state\":\"disabled\"},\"tds\":{\"state\":\"disabled\"}}");
+    response += F("},\"ph\":{\"state\":\"");
+    response += stateName(snapshot.ph.state);
+    response += '"';
+#if defined(AQUAMAX_PH_PROBE)
+    response += F(",\"enabled\":true,\"adcVolts\":");
+    response += phAdcHasValue_ ? String(phAdcVolts_, 4) : String("null");
+    response += F(",\"boardVolts\":");
+    response += phReading_.hasBoardVolts ? String(phReading_.boardVolts, 4) : String("null");
+    response += F(",\"stable\":"); response += phReading_.stable && phAdcHasValue_ ? "true" : "false";
+    response += F(",\"calibrated\":"); response += phCalibration_.valid && !phCalibrationError_ ? "true" : "false";
+    response += F(",\"storageError\":"); response += phCalibrationError_ ? "true" : "false";
+    response += F(",\"active\":"); response += phCalibrationSession_.active() ? "true" : "false";
+    response += F(",\"points\":[");
+    for (std::size_t index = 0; index < phCalibrationSession_.count(); ++index) {
+        if (index) response += ',';
+        response += F("{\"ph\":"); response += String(phCalibrationSession_.points()[index].ph, 2);
+        response += F(",\"boardVolts\":"); response += String(phCalibrationSession_.points()[index].boardVolts, 4);
+        response += '}';
+    }
+    response += ']';
+#else
+    response += F(",\"enabled\":false");
+#endif
+    response += F("},\"tds\":{\"state\":\"disabled\"}}");
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(200, "application/json", response);
 }
+
+#if defined(AQUAMAX_PH_PROBE)
+void DashboardPreview::changePhCalibration() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    const String action = server_.arg("action");
+    if (action == "start") {
+        if (phCalibrationError_) { server_.send(503, "text/plain", "pH calibration storage unavailable"); return; }
+        phCalibrationSession_.start();
+        phChannel_ = PhChannel{};
+        phReading_ = PhReading{};
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot_.ph.hasValue = false;
+        portEXIT_CRITICAL(&snapshotMutex_);
+    } else if (action == "cancel") {
+        phCalibrationSession_.cancel();
+    } else if (action == "capture") {
+        float reference = 0.0f;
+        if (!parseFloat(server_.arg("referencePh"), reference)) { server_.send(400, "text/plain", "Invalid buffer pH"); return; }
+        if (!phCalibrationSession_.active() || !phAdcHasValue_ || !phReading_.hasBoardVolts || !phReading_.stable ||
+            phReading_.state != ProbeState::connected || millis() - lastPhSampleMs_ >= 3000) {
+            server_.send(409, "text/plain", "pH signal is not ready and stable"); return;
+        }
+        if (!phCalibrationSession_.capture(reference, phReading_.boardVolts, phVoltageLimits_)) {
+            server_.send(400, "text/plain", "Invalid, too-close, or too many buffer points"); return;
+        }
+    } else if (action == "save") {
+        const uint32_t now = millis();
+        if (phCalibrationError_) { server_.send(503, "text/plain", "pH calibration storage unavailable"); return; }
+        if (phCalibrationWritten_ && now - lastPhCalibrationWriteMs_ < calibrationWriteIntervalMs) {
+            server_.send(429, "text/plain", "Try again shortly"); return;
+        }
+        PhCalibration candidate;
+        if (!phCalibrationSession_.fit(phVoltageLimits_, phCalibration_, candidate)) {
+            server_.send(400, "text/plain", "At least two valid buffer points with a decreasing voltage are required"); return;
+        }
+        phCalibrationWritten_ = true;
+        lastPhCalibrationWriteMs_ = now;
+        if (!phCalibrationStore_.commit(phCalibrationSession_.points(), phCalibrationSession_.count(), phVoltageLimits_, phCalibration_)) {
+            server_.send(503, "text/plain", "pH calibration could not be saved"); return;
+        }
+        phCalibrationSession_.cancel();
+    } else {
+        server_.send(400, "text/plain", "Invalid action"); return;
+    }
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+#endif
 
 void DashboardPreview::changeTemperatureCalibration() {
     if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
@@ -999,9 +1091,10 @@ void DashboardPreview::serveHistory(bool csv) {
 
 void DashboardPreview::update(uint32_t now) {
     const TemperatureSample sample = temperature_.update(now);
-    const SensorSnapshot snapshot = sensorBuilder_.updateTemperature({sample.state, sample.hasValue, sample.valueC, sample.lastSeenMs}, temperatureOffset_.load());
+    const SensorSnapshot temperatureSnapshot = sensorBuilder_.updateTemperature({sample.state, sample.hasValue, sample.valueC, sample.lastSeenMs}, temperatureOffset_.load());
     portENTER_CRITICAL(&snapshotMutex_);
-    snapshot_ = snapshot;
+    snapshot_.temperature = temperatureSnapshot.temperature;
+    const SensorSnapshot snapshot = snapshot_;
     portEXIT_CRITICAL(&snapshotMutex_);
 #if defined(AQUAMAX_TFT)
     const StartupScreen screen = startup_.update(now, displayWifiConnected_.load(), displayWifiTimedOut_.load());
@@ -1039,7 +1132,54 @@ void DashboardPreview::networkTask(void* context) {
     }
 }
 
+#if defined(AQUAMAX_PH_PROBE)
+void DashboardPreview::updatePhProbe(uint32_t now) {
+    if (!phWireReady_) return;
+    if (phConversionPending_) {
+        int16_t raw = 0;
+        const AdcResult result = phAdc_.poll(now, raw);
+        if (result == AdcResult::ready) {
+            phConversionPending_ = false;
+            phAdcHasValue_ = true;
+            phAdcError_ = false;
+            phAdcVolts_ = adsRawToVolts(raw);
+            phReading_ = phChannel_.update(phAdcVolts_, phVoltageLimits_, phCalibrationSession_.active() ? PhCalibration{} : phCalibration_, true);
+            portENTER_CRITICAL(&snapshotMutex_);
+            snapshot_.ph.state = phReading_.state;
+            snapshot_.ph.hasValue = phReading_.hasValue && !phCalibrationError_ && !phCalibrationSession_.active();
+            snapshot_.ph.value = phReading_.ph;
+            snapshot_.ph.lastSeenMs = now;
+            portEXIT_CRITICAL(&snapshotMutex_);
+        } else if (result == AdcResult::error) {
+            phConversionPending_ = false;
+            phAdcHasValue_ = false;
+            phAdcError_ = true;
+            phChannel_ = PhChannel{};
+            phReading_ = PhReading{};
+            portENTER_CRITICAL(&snapshotMutex_);
+            snapshot_.ph = {ProbeState::disconnected, false, 0.0f, 0};
+            portEXIT_CRITICAL(&snapshotMutex_);
+        }
+    } else if (now - lastPhSampleMs_ >= 1000) {
+        lastPhSampleMs_ = now;
+        phConversionPending_ = phAdc_.start(1, now);
+        if (!phConversionPending_) {
+            phAdcHasValue_ = false;
+            phAdcError_ = true;
+            phChannel_ = PhChannel{};
+            phReading_ = PhReading{};
+            portENTER_CRITICAL(&snapshotMutex_);
+            snapshot_.ph = {ProbeState::disconnected, false, 0.0f, 0};
+            portEXIT_CRITICAL(&snapshotMutex_);
+        }
+    }
+}
+#endif
+
 void DashboardPreview::updateNetwork(uint32_t now) {
+#if defined(AQUAMAX_PH_PROBE)
+    updatePhProbe(now);
+#endif
     if (setupActive_) dns_.processNextRequest();
     server_.handleClient();
     socket_.loop();
