@@ -15,7 +15,7 @@ PhReading PhChannel::update(float adcVolts, const PhVoltageLimits& limits,
     if (reading.voltageStatus != PhVoltageStatus::valid) {
         recentCount_ = 0;
         recentIndex_ = 0;
-        reading.state = state_.update(ProbeState::out_of_range);
+        reading.state = state_.update(ProbeState::signal_fault);
         return reading;
     }
     reading.hasBoardVolts = true;

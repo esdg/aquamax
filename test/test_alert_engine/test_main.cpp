@@ -64,11 +64,34 @@ void test_transient_excursions_and_millis_rollover() {
     TEST_ASSERT_EQUAL(static_cast<int>(AlertEvent::low), static_cast<int>(engine.update(49, ProbeState::connected, true, 19, config).event));
 }
 
+void test_probe_warnings_debounce_pause_recovery_and_disable() {
+    ProbeWarningMonitor monitor;
+    TEST_ASSERT_FALSE(monitor.update(0, ProbeState::signal_fault, false, 100));
+    TEST_ASSERT_FALSE(monitor.update(50, ProbeState::disabled, true, 100));
+    TEST_ASSERT_FALSE(monitor.update(150, ProbeState::disabled, true, 100));
+    TEST_ASSERT_FALSE(monitor.update(150, ProbeState::signal_fault, false, 100));
+    TEST_ASSERT_FALSE(monitor.update(199, ProbeState::signal_fault, false, 100));
+    TEST_ASSERT_TRUE(monitor.update(200, ProbeState::signal_fault, false, 100));
+    TEST_ASSERT_EQUAL(static_cast<int>(ProbeWarning::signalFault), static_cast<int>(monitor.state()));
+    TEST_ASSERT_FALSE(monitor.update(201, ProbeState::out_of_range, false, 100));
+    TEST_ASSERT_TRUE(monitor.update(301, ProbeState::out_of_range, false, 100));
+    TEST_ASSERT_EQUAL(static_cast<int>(ProbeWarning::outOfRange), static_cast<int>(monitor.state()));
+    TEST_ASSERT_FALSE(monitor.update(301, ProbeState::waiting, false, 100));
+    TEST_ASSERT_EQUAL(static_cast<int>(ProbeWarning::outOfRange), static_cast<int>(monitor.state()));
+    TEST_ASSERT_TRUE(monitor.update(302, ProbeState::connected, false, 100));
+    TEST_ASSERT_EQUAL(static_cast<int>(ProbeWarning::normal), static_cast<int>(monitor.state()));
+    TEST_ASSERT_FALSE(monitor.update(UINT32_MAX - 50, ProbeState::unstable, false, 100));
+    TEST_ASSERT_TRUE(monitor.update(49, ProbeState::unstable, false, 100));
+    TEST_ASSERT_TRUE(monitor.update(50, ProbeState::disabled, false, 100));
+    TEST_ASSERT_EQUAL(static_cast<int>(ProbeWarning::normal), static_cast<int>(monitor.state()));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_threshold_debounce_hysteresis_repeat_and_recovery);
     RUN_TEST(test_fault_suppresses_threshold_and_requires_real_recovery);
     RUN_TEST(test_defaults_never_raise_thresholds_and_reject_invalid_settings);
     RUN_TEST(test_transient_excursions_and_millis_rollover);
+    RUN_TEST(test_probe_warnings_debounce_pause_recovery_and_disable);
     return UNITY_END();
 }

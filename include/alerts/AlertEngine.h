@@ -38,4 +38,21 @@ private:
     bool pendingActive_ = false;
 };
 
+enum class ProbeWarning : uint8_t { normal, signalFault, outOfRange, unstable };
+
+class ProbeWarningMonitor {
+public:
+    bool update(uint32_t nowMs, ProbeState probe, bool paused, uint32_t debounceMs);
+    ProbeWarning state() const { return state_; }
+
+private:
+    ProbeWarning state_ = ProbeWarning::normal;
+    ProbeWarning pending_ = ProbeWarning::normal;
+    uint32_t pendingSince_ = 0;
+    uint32_t lastUpdateMs_ = 0;
+    bool pendingActive_ = false;
+    bool initialized_ = false;
+    bool paused_ = false;
+};
+
 } // namespace aquamax

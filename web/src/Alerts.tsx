@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import type { AlertStatus } from './live'
+import type { AlertStatus, Snapshot } from './live'
 
 type Settings = { thresholdsEnabled: boolean; probeFaultEnabled: boolean; minimum: number; maximum: number; hysteresis: number; debounceSeconds: number; repeatSeconds: number; state: string }
 type AlertData = { temperature: Settings; settingsError: boolean; ph: string; tds: string }
@@ -12,7 +12,7 @@ const presets = [
 ]
 const alertLabels: Record<string, string> = { normal: 'No active alert', low: 'Temperature below minimum', high: 'Temperature above maximum', probe_fault: 'Temperature probe fault' }
 
-export function Alerts({ live, browserEnabled, onBrowserChange }: { live: AlertStatus | undefined; browserEnabled: boolean; onBrowserChange: (enabled: boolean) => void }) {
+export function Alerts({ live, snapshot, browserEnabled, onBrowserChange }: { live: AlertStatus | undefined; snapshot: Snapshot | null; browserEnabled: boolean; onBrowserChange: (enabled: boolean) => void }) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [preset, setPreset] = useState('Custom')
   const [error, setError] = useState('')
@@ -66,6 +66,6 @@ export function Alerts({ live, browserEnabled, onBrowserChange }: { live: AlertS
         <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={busy}>Save settings</button></div>
       </form>}
       {error && settings && <p class="calibration-error" role="alert">{error}</p>}{notice && <p class="calibration-notice" role="status">{notice}</p>}
-    </div><aside class="probe-health"><span class="device-label">NOTIFICATIONS</span><h2>Browser</h2><p class="calibration-instruction">Alerts appear while this dashboard is open.</p><div class="notification-actions"><button class="notification-button" type="button" disabled={!notificationAvailable} onClick={() => void toggleNotifications()}>{browserEnabled ? 'Disable notifications' : 'Enable notifications'}</button><button class="notification-button" type="button" disabled={!browserEnabled} onClick={testNotification}>Send test</button></div>{!notificationAvailable && <small class="notification-hint">Browser notifications require a supported secure origin.</small>}<div class="health-row"><div><strong>pH and TDS</strong><small>Not enabled</small></div></div></aside></div>
+    </div><aside class="probe-health"><span class="device-label">NOTIFICATIONS</span><h2>Browser</h2><p class="calibration-instruction">Alerts appear while this dashboard is open.</p><div class="notification-actions"><button class="notification-button" type="button" disabled={!notificationAvailable} onClick={() => void toggleNotifications()}>{browserEnabled ? 'Disable notifications' : 'Enable notifications'}</button><button class="notification-button" type="button" disabled={!browserEnabled} onClick={testNotification}>Send test</button></div>{!notificationAvailable && <small class="notification-hint">Browser notifications require a supported secure origin.</small>}{(['ph', 'tds'] as const).map(probe => { const warning = live?.[probe]; return <div class="health-row" key={probe}><div><strong>{probe === 'ph' ? 'pH' : 'TDS'}</strong><small>{snapshot?.[probe].state === 'disabled' ? 'Not enabled' : !warning ? 'Status unavailable' : warning === 'normal' ? 'No active warning' : warning === 'signal_fault' ? 'Check signal or connection' : warning === 'out_of_range' ? 'Measurement out of range' : 'Measurement unstable'}</small></div></div> })}</aside></div>
   </section>
 }

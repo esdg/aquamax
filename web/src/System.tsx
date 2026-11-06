@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 
 type Diagnostics = { uptimeSeconds: number; freeHeapBytes: number; freePsramBytes: number; psramBytes: number; flashBytes: number; filesystemReady: boolean; filesystemUsedBytes: number; filesystemTotalBytes: number; journalReady: boolean; wifiConnected: boolean; wifiRssi: number | null; ipAddress: string | null }
 type Backup = { version: 1; timezone: string; alerts: { thresholdsEnabled: boolean; probeFaultEnabled: boolean; minimum: number; maximum: number; hysteresis: number; debounceSeconds: number; repeatSeconds: number }; temperatureCalibration: { offsetC: number; timestamp: number; calibrated: boolean } }
+type Monitoring = { temperature: boolean; ph: boolean; tds: boolean; phAvailable: boolean; tdsAvailable: boolean; storageError: boolean }
 
 function parseBackup(value: unknown): Backup {
   if (!value || typeof value !== 'object') throw new Error('Invalid configuration file')
@@ -15,10 +16,43 @@ function parseBackup(value: unknown): Backup {
   return data
 }
 
+function MonitoringSettings({ online }: { online: boolean }) {
+  const [settings, setSettings] = useState<Monitoring | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  useEffect(() => {
+    if (!online) { setSettings(null); return }
+    const controller = new AbortController()
+    void fetch('/api/monitoring', { cache: 'no-store', signal: controller.signal }).then(response => {
+      if (!response.ok) throw new Error('Monitoring settings unavailable')
+      return response.json() as Promise<Monitoring>
+    }).then(data => { setSettings(data); setError('') }).catch(() => { if (!controller.signal.aborted) setError('Monitoring settings unavailable') })
+    return () => controller.abort()
+  }, [online])
+  const save = async () => {
+    if (!settings) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const body = new URLSearchParams({ temperature: settings.temperature ? '1' : '0', ph: settings.ph ? '1' : '0', tds: settings.tds ? '1' : '0' })
+      const response = await fetch('/api/monitoring', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+      if (!response.ok) throw new Error(await response.text())
+      setSettings(await response.json() as Monitoring); setNotice('Monitoring settings saved.')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Monitoring settings could not be saved') }
+    finally { setBusy(false) }
+  }
+  return <div class="system-section"><h2>Probe monitoring</h2>{settings ? <form onSubmit={event => { event.preventDefault(); void save() }}>
+    {([['temperature', 'Temperature', true], ['ph', 'pH', settings.phAvailable], ['tds', 'TDS', settings.tdsAvailable]] as const).map(([key, label, available]) => <div class="health-row" key={key}><label class="check-label"><input type="checkbox" checked={settings[key] && available} disabled={!available || busy || !online} onChange={event => setSettings(current => current ? { ...current, [key]: event.currentTarget.checked } : current)} /> {label}</label>{!available && <small>Unavailable in this firmware</small>}</div>)}
+    {settings.storageError && <p class="calibration-error" role="alert">Saved monitoring settings could not be read.</p>}
+    <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={busy || !online}>Save monitoring</button></div>
+  </form> : <p>{online ? 'Loading monitoring settings...' : 'Device offline'}</p>}{error && <p class="calibration-error" role="alert">{error}</p>}{notice && <p class="calibration-notice" role="status">{notice}</p>}</div>
+}
+
 export function Settings({ timezone, pending, error, online, timezones, onTimezone, theme, onTheme }: { timezone: string; pending: string | null; error: boolean; online: boolean; timezones: string[]; onTimezone: (value: string) => void; theme: 'system' | 'light' | 'dark'; onTheme: (value: 'system' | 'light' | 'dark') => void }) {
   return <section><div class="history-heading"><div><div class="eyebrow">AQUARIUM / SETTINGS</div><h1>Settings</h1></div></div>
     <div class="system-section"><h2>Appearance</h2><div class="segment" role="group" aria-label="Appearance">{(['system', 'light', 'dark'] as const).map(value => <button type="button" class={theme === value ? 'selected' : ''} aria-pressed={theme === value} onClick={() => onTheme(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div></div>
     <div class="system-section"><h2>Device time</h2><label class="system-field">Timezone<select value={pending ?? timezone} disabled={!online || pending !== null} onChange={event => onTimezone(event.currentTarget.value)}>{timezones.map(zone => <option value={zone}>{zone.replaceAll('_', ' ')}</option>)}</select></label>{error && <p class="calibration-error" role="alert">Could not save timezone.</p>}</div>
+    <MonitoringSettings online={online} />
     <div class="system-section"><h2>Network</h2><p>{online ? 'Wi-Fi connected' : 'Device offline'}</p><p>Wi-Fi credentials are not included in configuration backups.</p></div>
     <div class="system-section"><h2>Measurements and storage</h2><p>Sensor availability depends on the active firmware and connections.</p><p>History is stored locally with fixed retention.</p></div>
   </section>
@@ -89,7 +123,7 @@ export function System() {
   const megabytes = (bytes: number) => `${(bytes / 1048576).toFixed(2)} MB`
   return <section><div class="history-heading"><div><div class="eyebrow">AQUARIUM / SYSTEM</div><h1>System</h1></div></div>
     <div class="system-section"><h2>Diagnostics</h2>{!diagnostics ? <p>{error || 'Loading diagnostics...'}</p> : <dl class="system-diagnostics"><div><dt>Uptime</dt><dd>{Math.floor(diagnostics.uptimeSeconds / 60)} min</dd></div><div><dt>Network</dt><dd>{diagnostics.wifiConnected ? `${diagnostics.ipAddress} (${diagnostics.wifiRssi} dBm)` : 'Disconnected'}</dd></div><div><dt>Free heap</dt><dd>{megabytes(diagnostics.freeHeapBytes)}</dd></div><div><dt>Free PSRAM</dt><dd>{megabytes(diagnostics.freePsramBytes)} / {megabytes(diagnostics.psramBytes)}</dd></div><div><dt>Flash</dt><dd>{megabytes(diagnostics.flashBytes)}</dd></div><div><dt>Storage</dt><dd>{diagnostics.filesystemReady ? `${megabytes(diagnostics.filesystemUsedBytes)} / ${megabytes(diagnostics.filesystemTotalBytes)}` : 'Unavailable'}</dd></div><div><dt>Journal</dt><dd>{diagnostics.journalReady ? 'Ready' : 'Unavailable'}</dd></div></dl>}</div>
-    <div class="system-section"><h2>Configuration</h2><p>Includes timezone, temperature calibration and alert settings. Wi-Fi credentials, history and journal are excluded.</p><div class="system-actions"><a class="notification-button" href="/api/system/config" download="aquamax-config.json">Download backup</a><label class="system-file">Restore backup<input type="file" accept=".json,application/json" onChange={event => setBackup(event.currentTarget.files?.[0] ?? null)} /></label><button class="notification-button" type="button" disabled={!backup || busy} onClick={() => void restore()}>Restore</button></div><small>Restore writes settings separately; a storage failure can leave a partial restore.</small></div>
+    <div class="system-section"><h2>Configuration</h2><p>Includes timezone, temperature calibration and temperature alert settings. Probe monitoring, pH and TDS calibration, Wi-Fi credentials, history and journal are excluded.</p><div class="system-actions"><a class="notification-button" href="/api/system/config" download="aquamax-config.json">Download backup</a><label class="system-file">Restore backup<input type="file" accept=".json,application/json" onChange={event => setBackup(event.currentTarget.files?.[0] ?? null)} /></label><button class="notification-button" type="button" disabled={!backup || busy} onClick={() => void restore()}>Restore</button></div><small>Restore writes settings separately; a storage failure can leave a partial restore.</small></div>
     <div class="system-section"><h2>Firmware update</h2><p>Updates are not signed or authenticated. Use only a trusted firmware file on a trusted network.</p><div class="system-actions"><label class="system-file">Firmware file<input type="file" accept=".bin,application/octet-stream" onChange={event => setFirmware(event.currentTarget.files?.[0] ?? null)} /></label><button class="notification-button" type="button" disabled={!firmware || busy} onClick={() => void update()}>Install firmware</button></div></div>
     <div class="system-section"><h2>Restart</h2><button class="notification-button" type="button" disabled={busy} onClick={() => void restart()}>Restart device</button></div>
     {error && <p class="calibration-error" role="alert">{error}</p>}{notice && <p class="calibration-notice" role="status">{notice}</p>}

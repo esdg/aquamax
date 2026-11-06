@@ -1,13 +1,19 @@
-export type ProbeState = 'connected' | 'disconnected' | 'unstable' | 'out_of_range' | 'disabled'
-export type AlertStatus = { temperature: 'normal' | 'low' | 'high' | 'probe_fault'; event: 'none' | 'low' | 'high' | 'probe_fault' | 'recovered'; sequence: number; settingsError: boolean }
+export type ProbeState = 'connected' | 'disconnected' | 'unstable' | 'out_of_range' | 'disabled' | 'signal_fault' | 'waiting'
+export type ProbeWarning = 'normal' | 'signal_fault' | 'out_of_range' | 'unstable'
+export type AlertStatus = { temperature: 'normal' | 'low' | 'high' | 'probe_fault'; event: 'none' | 'low' | 'high' | 'probe_fault' | 'recovered'; sequence: number; settingsError: boolean; ph?: ProbeWarning; tds?: ProbeWarning }
 export type Snapshot = {
   temperature: { state: ProbeState; valueC: number | null }
-  ph: { state: ProbeState; value: number | null }
+  ph: { state: ProbeState; value: number | null; calibrated?: boolean; calibrationError?: boolean }
   tds: { state: ProbeState; value: number | null; calibrated?: boolean; defaultTemperature?: boolean }
   wifi: 'connected' | 'disconnected'
   uptimeSeconds: number
   time?: { synchronized: boolean; unixSeconds: number | null; local?: string | null; timezone?: string }
   alerts?: AlertStatus
+}
+
+export function phCalibrationStatus(ph: Snapshot['ph'] | undefined): string | undefined {
+  if (!ph || ph.state !== 'connected' || ph.value !== null) return undefined
+  return ph.calibrationError ? 'Calibration storage error' : ph.calibrated === false ? 'Calibration required' : undefined
 }
 
 type Socket = Pick<WebSocket, 'close' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'>
@@ -20,7 +26,7 @@ type LiveOptions = {
   onOffline: () => void
 }
 
-const states = ['connected', 'disconnected', 'unstable', 'out_of_range', 'disabled']
+const states = ['connected', 'disconnected', 'unstable', 'out_of_range', 'disabled', 'signal_fault', 'waiting']
 
 export function isSnapshot(value: unknown): value is Snapshot {
   if (!value || typeof value !== 'object') return false
@@ -32,13 +38,17 @@ export function isSnapshot(value: unknown): value is Snapshot {
       (channel[key] === null || (typeof channel[key] === 'number' && Number.isFinite(channel[key])))
   }
   const alerts = data.alerts as Record<string, unknown> | undefined
+  const ph = data.ph as Record<string, unknown> | undefined
   const tds = data.tds as Record<string, unknown> | undefined
+  if (ph && ((ph.calibrated !== undefined && typeof ph.calibrated !== 'boolean') ||
+    (ph.calibrationError !== undefined && typeof ph.calibrationError !== 'boolean'))) return false
   if (tds && ((tds.calibrated !== undefined && typeof tds.calibrated !== 'boolean') ||
     (tds.defaultTemperature !== undefined && typeof tds.defaultTemperature !== 'boolean'))) return false
   if (alerts !== undefined && (!alerts || typeof alerts !== 'object' ||
     typeof alerts.temperature !== 'string' || !['normal', 'low', 'high', 'probe_fault'].includes(alerts.temperature) ||
     typeof alerts.event !== 'string' || !['none', 'low', 'high', 'probe_fault', 'recovered'].includes(alerts.event) ||
-    typeof alerts.sequence !== 'number' || !Number.isSafeInteger(alerts.sequence) || alerts.sequence < 0 || typeof alerts.settingsError !== 'boolean')) return false
+    typeof alerts.sequence !== 'number' || !Number.isSafeInteger(alerts.sequence) || alerts.sequence < 0 || typeof alerts.settingsError !== 'boolean' ||
+    ['ph', 'tds'].some(key => alerts[key] !== undefined && (typeof alerts[key] !== 'string' || !['normal', 'signal_fault', 'out_of_range', 'unstable'].includes(alerts[key] as string))))) return false
   return reading(data.temperature, 'valueC') && reading(data.ph, 'value') && reading(data.tds, 'value') &&
     (data.wifi === 'connected' || data.wifi === 'disconnected') &&
     typeof data.uptimeSeconds === 'number' && Number.isFinite(data.uptimeSeconds)

@@ -21,6 +21,7 @@ struct SensorReading {
     float value = 0.0f;
     uint32_t lastSeenMs = 0;
     bool calibrated = false;
+    bool calibrationError = false;
 };
 
 struct SensorSnapshot {

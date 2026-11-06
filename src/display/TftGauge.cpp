@@ -24,6 +24,8 @@ constexpr uint16_t dimColor = 0x39e7;
 constexpr uint16_t textColor = 0xef7d;
 constexpr uint16_t warningColor = 0xf9a8;
 constexpr uint16_t temperatureColor = 0x5e9f;
+constexpr uint8_t displayOffCommand = 0x28;
+constexpr uint8_t displayOnCommand = 0x29;
 
 class SharedSpiBus : public lgfx::Bus_SPI {
 public:
@@ -91,8 +93,19 @@ public:
 		digitalWrite(pins::tftReset, HIGH);
 		delay(120);
 		for (auto& display : displays_) {
-			if (!display.init()) return false;
+			if (!display.init_without_reset()) return false;
+			display.startWrite();
+			display.writeCommand(displayOffCommand);
+			display.waitDMA();
+			display.endWrite();
+			display.startWrite();
 			display.fillScreen(0);
+			display.waitDMA();
+			display.endWrite();
+			display.startWrite();
+			display.writeCommand(displayOnCommand);
+			display.waitDMA();
+			display.endWrite();
 		}
 		base_.setPsram(true);
 		canvas_.setPsram(true);
@@ -108,7 +121,10 @@ public:
 	void splash(uint32_t elapsedMs) {
 		if (mode_ != Mode::splash) {
 			previousSetup_ = {};
+			displays_[1].startWrite();
 			displays_[1].fillScreen(0);
+			displays_[1].waitDMA();
+			displays_[1].endWrite();
 			mode_ = Mode::splash;
 			splashDrawn_ = false;
 		}
@@ -120,7 +136,7 @@ public:
 			const uint8_t value = static_cast<uint8_t>(icons::logo_176_43[row * 176 + column] * brightness / 255);
 			logo_.drawPixel(column, row, lgfx::color565(value, value, value));
 		}
-		logo_.pushSprite(&displays_[1], (screenSize - 176) / 2, (screenSize - 43) / 2);
+		pushSprite(logo_, displays_[1], (screenSize - 176) / 2, (screenSize - 43) / 2);
 		splashDrawn_ = true;
 	}
 
@@ -152,7 +168,7 @@ public:
 			canvas_.drawString(setup.failed ? "Setup AP failed" : "Starting setup...", center, 110);
 			if (setup.failed) canvas_.drawString("Restart device", center, 132);
 		}
-		canvas_.pushSprite(&displays_[1], 0, 0);
+		pushSprite(canvas_, displays_[1], 0, 0);
 	}
 
 	void update(const SensorSnapshot& snapshot, bool alert, uint32_t nowMs) {
@@ -160,42 +176,50 @@ public:
 			previousSetup_ = {};
 			mode_ = Mode::gauges;
 			drawn_ = false;
+			resetWindow(displays_[0]);
+			resetWindow(displays_[2]);
 #if defined(AQUAMAX_PH_PROBE)
 			phDrawn_ = false;
+#else
+			drawStatic(false, false, icons::drop_off_32, "pH", "pH", false);
+			drawValue({}, "Not enabled");
+			pushSprite(canvas_, displays_[1], 0, 0);
 #endif
 #if defined(AQUAMAX_TDS_PROBE)
 			tdsDrawn_ = false;
+#else
+			drawStatic(false, false, icons::three_drops_off_32, "ppm", "TDS", false);
+			drawValue({}, "Not enabled");
+			pushSprite(canvas_, displays_[2], 0, 0);
 #endif
-			drawStatic(false, false, icons::drop_off_32, "pH", "pH");
-			drawValue({}, "Not enabled");
-			canvas_.pushSprite(&displays_[1], 0, 0);
-			drawStatic(false, false, icons::three_drops_off_32, "ppm", "TDS");
-			drawValue({}, "Not enabled");
-			canvas_.pushSprite(&displays_[2], 0, 0);
 		}
 		if (drawn_ && nowMs - lastFrameMs_ < frameIntervalMs) return;
 		lastFrameMs_ = nowMs;
 		const bool fresh = snapshot.temperature.hasValue && nowMs - snapshot.temperature.lastSeenMs < 3000;
 		const GaugeFrame frame = temperature_.update(snapshot.temperature.state, fresh, snapshot.temperature.valueC, alert, nowMs);
-		if (!drawn_ || frame.hasValue != previousValue_ || frame.alert != previousAlert_) {
-			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
+		if (!drawn_ || frame.hasValue != previousValue_ || frame.alert != previousAlert_ || frame.state != previousState_) {
+			drawTemperatureStatic(frame);
 			previousValue_ = frame.hasValue;
 			previousAlert_ = frame.alert;
+			previousState_ = frame.state;
 		}
-		const char* status = frame.state == ProbeState::connected ? "Waiting" : frame.state == ProbeState::disconnected ? "Disconnected" : frame.state == ProbeState::disabled ? "Not enabled" : "Probe error";
+		const char* status = frame.state == ProbeState::disconnected ? "Disconnected" : statusText(frame.state);
 		drawValue(frame, status);
-		canvas_.pushSprite(&displays_[0], 0, 0);
+		pushSprite(canvas_, displays_[0], 0, 0);
 		drawn_ = true;
 #if defined(AQUAMAX_PH_PROBE)
 		if (!phDrawn_ || nowMs - lastPhFrameMs_ >= 1000) {
 			lastPhFrameMs_ = nowMs;
 			const bool phFresh = snapshot.ph.hasValue && nowMs - snapshot.ph.lastSeenMs < 3000;
 			const GaugeFrame phFrame = ph_.update(snapshot.ph.state, phFresh, snapshot.ph.value, false, nowMs);
-			drawStatic(phFrame.hasValue, false, phFrame.hasValue ? icons::drop_32 : icons::drop_off_32, "pH", "pH");
-			const char* phStatus = phFrame.state == ProbeState::connected ? "Calibrate" : phFrame.state == ProbeState::disabled ? "Not enabled" : "Check signal";
+			const bool range = phFrame.state == ProbeState::out_of_range;
+			drawStatic(phFrame.hasValue, false, range ? icons::warning_32 : phFrame.hasValue ? icons::drop_32 : icons::drop_off_32, "pH", "pH", isFault(phFrame.state) && !range, range);
+			const char* phStatus = phFrame.state == ProbeState::connected && !phFrame.hasValue
+				? snapshot.ph.calibrationError ? "Calibration error" : !snapshot.ph.calibrated ? "Calibration required" : "Waiting"
+				: statusText(phFrame.state);
 			drawValue(phFrame, phStatus);
-			canvas_.pushSprite(&displays_[1], 0, 0);
-			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
+			pushSprite(canvas_, displays_[1], 0, 0);
+			drawTemperatureStatic(frame);
 			phDrawn_ = true;
 		}
 #endif
@@ -204,16 +228,17 @@ public:
 			lastTdsFrameMs_ = nowMs;
 			const bool tdsFresh = snapshot.tds.hasValue && nowMs - snapshot.tds.lastSeenMs < 75000;
 			const GaugeFrame tdsFrame = tds_.update(snapshot.tds.state, tdsFresh, snapshot.tds.value, false, nowMs);
-			drawStatic(tdsFrame.hasValue, false, tdsFrame.hasValue ? icons::three_drops_32 : icons::three_drops_off_32, "ppm", "TDS");
-			const char* tdsStatus = tdsFrame.state == ProbeState::connected ? "Waiting" : tdsFrame.state == ProbeState::disabled ? "Not enabled" : "Check signal";
+			const bool range = tdsFrame.state == ProbeState::out_of_range;
+			drawStatic(tdsFrame.hasValue, false, range ? icons::warning_32 : tdsFrame.hasValue ? icons::three_drops_32 : icons::three_drops_off_32, "ppm", "TDS", isFault(tdsFrame.state) && !range, range);
+			const char* tdsStatus = statusText(tdsFrame.state);
 			drawValue(tdsFrame, tdsStatus);
 			if (tdsFrame.hasValue && !snapshot.tds.calibrated) {
 				canvas_.setFont(&fonts::Font0);
 				canvas_.setTextColor(mutedColor, backgroundColor);
 				canvas_.drawString("Estimate", center, 229);
 			}
-			canvas_.pushSprite(&displays_[2], 0, 0);
-			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
+			pushSprite(canvas_, displays_[2], 0, 0);
+			drawTemperatureStatic(frame);
 			tdsDrawn_ = true;
 		}
 #endif
@@ -221,6 +246,28 @@ public:
 
 private:
 	enum class Mode { none, splash, setup, gauges };
+	static void resetWindow(lgfx::LGFX_Device& display) {
+		display.startWrite();
+		display.setAddrWindow(0, 0, 1, 1);
+		display.waitDMA();
+		display.endWrite();
+	}
+	static void pushSprite(lgfx::LGFX_Sprite& sprite, lgfx::LGFX_Device& display, int x, int y) {
+		display.startWrite();
+		sprite.pushSprite(&display, x, y);
+		display.waitDMA();
+		display.endWrite();
+	}
+	static bool isFault(ProbeState state) { return state == ProbeState::disconnected || state == ProbeState::signal_fault || state == ProbeState::unstable || state == ProbeState::out_of_range; }
+	static const char* statusText(ProbeState state) {
+		return state == ProbeState::out_of_range ? "Out of range" : state == ProbeState::unstable ? "Unstable" :
+		       state == ProbeState::disabled ? "Not enabled" : state == ProbeState::waiting || state == ProbeState::connected ? "Waiting" : "Check signal";
+	}
+	void drawTemperatureStatic(const GaugeFrame& frame) {
+		const bool range = frame.state == ProbeState::out_of_range;
+		drawStatic(frame.hasValue, frame.alert, range ? icons::warning_32 : frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32,
+		           "C", "TEMPERATURE", isFault(frame.state) && !range, range);
+	}
 	static int pointX(float position, int radius) { return center + static_cast<int>(std::cos((135.0f + 270.0f * position) * pi / 180.0f) * radius); }
 	static int pointY(float position, int radius) { return center + static_cast<int>(std::sin((135.0f + 270.0f * position) * pi / 180.0f) * radius); }
 
@@ -242,7 +289,7 @@ private:
 		}
 	}
 
-	void drawStatic(bool active, bool alert, const uint8_t* mask, const char* unit, const char* label) {
+	void drawStatic(bool active, bool alert, const uint8_t* mask, const char* unit, const char* label, bool showWarning = true, bool rangeWarning = false) {
 		base_.fillSprite(backgroundColor);
 		for (int segment = 0; segment < 270; ++segment) {
 			const float start = static_cast<float>(segment) / 270.0f;
@@ -255,7 +302,8 @@ private:
 			const float position = static_cast<float>(tick) / 10.0f;
 			base_.drawLine(pointX(position, 86), pointY(position, 86), pointX(position, 90), pointY(position, 90), dimColor);
 		}
-		if (active) icon(mask, 104, 51, 101, 211, 245);
+		if (rangeWarning) icon(mask, 104, 51, 239, 177, 69);
+		else if (active) icon(mask, 104, 51, 101, 211, 245);
 		else icon(mask, 104, 51, 160, 170, 170);
 		base_.setTextDatum(textdatum_t::middle_center);
 		base_.setTextColor(active ? textColor : mutedColor, backgroundColor);
@@ -263,7 +311,7 @@ private:
 		base_.setFont(&fonts::Font2);
 		base_.drawString(unit, center, 150);
 		base_.drawString(label, center, 172);
-		if (!active) {
+		if (!active && showWarning) {
 			for (int row = 0; row < 32; ++row) for (int column = 0; column < 32; ++column) {
 				const uint8_t alpha = icons::warning_32[row * 32 + column];
 				if (alpha) base_.drawPixel(104 + column, 186 + row, lgfx::color565((240 * alpha + 8 * (255 - alpha)) / 255, (60 * alpha + 8 * (255 - alpha)) / 255, (48 * alpha + 8 * (255 - alpha)) / 255));
@@ -316,6 +364,7 @@ private:
 	bool splashDrawn_ = false;
 	bool drawn_ = false;
 	bool previousValue_ = false;
+	ProbeState previousState_ = ProbeState::disconnected;
 	bool previousAlert_ = false;
 };
 

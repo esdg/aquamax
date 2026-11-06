@@ -47,6 +47,8 @@ private:
     void serveSetupStatus();
     void connectNetwork();
     void setTimezone();
+    void serveMonitoring();
+    void changeMonitoring();
     void serveHistory(bool csv);
     void serveHistoryStatus();
     void clearHistory();
@@ -152,6 +154,12 @@ private:
 #endif
     SensorSnapshotBuilder sensorBuilder_;
     SensorSnapshot snapshot_;
+    std::atomic<uint8_t> monitoringMask_{7};
+    bool monitoringStorageError_ = false;
+    bool monitoringWritten_ = false;
+    uint32_t lastMonitoringWriteMs_ = 0;
+    ProbeWarningMonitor phWarnings_;
+    ProbeWarningMonitor tdsWarnings_;
     AlertSettingsStore alertSettingsStore_;
     AlertConfig alertConfig_;
     AlertEngine temperatureAlerts_;

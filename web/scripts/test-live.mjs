@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { isSnapshot, startLiveFeed } from '../src/live.ts'
+import { isSnapshot, phCalibrationStatus, startLiveFeed } from '../src/live.ts'
 
 const snapshot = valueC => ({
   temperature: { state: 'connected', valueC },
@@ -61,6 +61,9 @@ test('rejects malformed or non-finite readings', () => {
   assert.equal(isSnapshot(snapshot(24)), true)
   assert.equal(isSnapshot(snapshot(NaN)), false)
   assert.equal(isSnapshot({ ...snapshot(24), tds: { state: 'unknown', value: 3 } }), false)
+  assert.equal(isSnapshot({ ...snapshot(24), ph: { state: 'connected', value: null, calibrated: false, calibrationError: false } }), true)
+  assert.equal(isSnapshot({ ...snapshot(24), ph: { state: 'connected', value: null, calibrated: 'false' } }), false)
+  assert.equal(isSnapshot({ ...snapshot(24), ph: { state: 'connected', value: null, calibrationError: 'false' } }), false)
   const alerts = { temperature: 'normal', event: 'none', sequence: 0, settingsError: false }
   assert.equal(isSnapshot({ ...snapshot(24), alerts }), true)
   assert.equal(isSnapshot({ ...snapshot(24), alerts: { ...alerts, sequence: NaN } }), false)
@@ -98,4 +101,15 @@ test('offline requests and a silent socket recover without stale readings', asyn
   feed.sockets[1].message(snapshot(24))
   assert.equal(feed.received.at(-1).temperature.valueC, 24)
   feed.stop()
+})
+
+test('pH calibration status does not hide signal faults or ordinary waiting', () => {
+  assert.equal(phCalibrationStatus({ state: 'connected', value: null, calibrated: false }), 'Calibration required')
+  assert.equal(phCalibrationStatus({ state: 'connected', value: null, calibrated: false, calibrationError: true }), 'Calibration storage error')
+  assert.equal(phCalibrationStatus({ state: 'connected', value: null, calibrated: true }), undefined)
+  assert.equal(phCalibrationStatus({ state: 'connected', value: null }), undefined)
+  assert.equal(phCalibrationStatus({ state: 'connected', value: 7, calibrated: true }), undefined)
+  assert.equal(phCalibrationStatus({ state: 'signal_fault', value: null, calibrated: false }), undefined)
+  assert.equal(phCalibrationStatus({ state: 'waiting', value: null, calibrated: false }), undefined)
+  assert.equal(phCalibrationStatus({ state: 'disabled', value: null, calibrated: false }), undefined)
 })

@@ -29,6 +29,8 @@ const char* probeStateName(aquamax::ProbeState state) {
         case aquamax::ProbeState::unstable: return "unstable";
         case aquamax::ProbeState::out_of_range: return "out_of_range";
         case aquamax::ProbeState::disabled: return "disabled";
+        case aquamax::ProbeState::signal_fault: return "signal_fault";
+        case aquamax::ProbeState::waiting: return "waiting";
     }
     return "unknown";
 }

@@ -10,6 +10,8 @@ enum class ProbeState : uint8_t {
     unstable,
     out_of_range,
     disabled,
+    signal_fault,
+    waiting,
 };
 
 class ProbeStateTracker {

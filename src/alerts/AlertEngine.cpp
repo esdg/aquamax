@@ -32,7 +32,8 @@ void AlertEngine::reset() {
 AlertResult AlertEngine::update(uint32_t nowMs, ProbeState probe, bool hasValue, float value, const AlertConfig& config) {
     if (!validAlertConfig(config) || probe == ProbeState::disabled) { reset(); return {}; }
     const bool validReading = probe == ProbeState::connected && hasValue && std::isfinite(value);
-    const bool faulty = probe == ProbeState::disconnected || probe == ProbeState::unstable || probe == ProbeState::out_of_range;
+    const bool faulty = probe == ProbeState::disconnected || probe == ProbeState::unstable ||
+                        probe == ProbeState::out_of_range || probe == ProbeState::signal_fault;
     if (!validReading && (state_ == AlertState::low || state_ == AlertState::high)) state_ = AlertState::normal;
     AlertState desired = AlertState::normal;
     if (faulty && config.probeFaultEnabled) desired = AlertState::probeFault;
@@ -59,6 +60,37 @@ AlertResult AlertEngine::update(uint32_t nowMs, ProbeState probe, bool hasValue,
         }
     }
     return {state_, AlertEvent::none};
+}
+
+bool ProbeWarningMonitor::update(uint32_t nowMs, ProbeState probe, bool paused, uint32_t debounceMs) {
+    paused = paused || probe == ProbeState::waiting;
+    if (initialized_ && paused_ && pendingActive_) pendingSince_ += nowMs - lastUpdateMs_;
+    lastUpdateMs_ = nowMs;
+    initialized_ = true;
+    paused_ = paused;
+    if (paused) {
+        return false;
+    }
+    ProbeWarning desired = ProbeWarning::normal;
+    if (probe == ProbeState::disconnected || probe == ProbeState::signal_fault) desired = ProbeWarning::signalFault;
+    else if (probe == ProbeState::out_of_range) desired = ProbeWarning::outOfRange;
+    else if (probe == ProbeState::unstable) desired = ProbeWarning::unstable;
+    if (desired == ProbeWarning::normal) {
+        pendingActive_ = false;
+        const bool changed = state_ != desired;
+        state_ = desired;
+        return changed;
+    }
+    if (desired == state_) { pendingActive_ = false; return false; }
+    if (!pendingActive_ || pending_ != desired) {
+        pending_ = desired;
+        pendingSince_ = nowMs;
+        pendingActive_ = true;
+    }
+    if (nowMs - pendingSince_ < debounceMs) return false;
+    state_ = desired;
+    pendingActive_ = false;
+    return true;
 }
 
 } // namespace aquamax

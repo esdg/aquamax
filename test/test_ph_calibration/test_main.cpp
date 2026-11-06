@@ -97,7 +97,7 @@ void test_fault_hides_value_before_debounce_and_recovers() {
     TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::connected), static_cast<int>(firstFault.state));
     channel.update(0.0f, {}, calibration, true);
     const auto fault = channel.update(0.0f, {}, calibration, true);
-    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::out_of_range), static_cast<int>(fault.state));
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::signal_fault), static_cast<int>(fault.state));
     TEST_ASSERT_FALSE(fault.hasValue);
     TEST_ASSERT_FALSE(channel.update(1.5f, {}, calibration, true).hasValue);
     channel.update(1.5f, {}, calibration, true);

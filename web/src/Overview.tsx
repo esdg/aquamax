@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { phCalibrationStatus } from './live'
 import type { ProbeState, Snapshot } from './live'
 import type { JournalEntry } from './Journal'
 
@@ -6,7 +7,7 @@ type Page = 'calibration' | 'alerts' | 'journal' | 'system'
 type Calibration = { temperature: { calibrated: boolean; timestamp: number | null; state: string; storageError: boolean } }
 type Diagnostics = { ipAddress: string | null; wifiConnected: boolean; freeHeapBytes: number }
 type OverviewData = { calibration: Calibration | null; events: JournalEntry[] | null; tips: string[] | null; diagnostics: Diagnostics | null }
-const probeLabels: Record<ProbeState, string> = { connected: 'Connected', disconnected: 'Disconnected', unstable: 'Unstable', out_of_range: 'Out of range', disabled: 'Not enabled' }
+const probeLabels: Record<ProbeState, string> = { connected: 'Connected', disconnected: 'Disconnected', unstable: 'Unstable', out_of_range: 'Out of range', disabled: 'Not enabled', signal_fault: 'Check signal or connection', waiting: 'Waiting for measurement' }
 
 export function Overview({ snapshot, online, timezone, navigate }: { snapshot: Snapshot | null; online: boolean; timezone: string; navigate: (page: Page) => void }) {
   const [data, setData] = useState<OverviewData>({ calibration: null, events: null, tips: null, diagnostics: null })
@@ -40,14 +41,15 @@ export function Overview({ snapshot, online, timezone, navigate }: { snapshot: S
   const date = (timestamp: number | null) => timestamp ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(timestamp * 1000) : 'Time unavailable'
   return <>
     <section class="overview-panel overview-calibration"><div class="panel-heading"><div><h2>Calibration</h2><p>Probe status and calibration</p></div><button type="button" onClick={() => navigate('calibration')}>Manage <span aria-hidden="true">›</span></button></div>
-      <div class="overview-list"><div><span>Temperature probe</span><strong>{!temperature ? 'Unavailable' : temperature.storageError ? 'Storage error' : temperature.calibrated ? 'Calibrated' : 'Factory offset'}</strong></div><div><span>Last calibration</span><strong>{temperature?.timestamp ? date(temperature.timestamp) : 'Not available'}</strong></div><div><span>pH probe</span><strong>{snapshot ? probeLabels[snapshot.ph.state] : 'Unavailable'}</strong></div><div><span>TDS probe</span><strong>{snapshot ? probeLabels[snapshot.tds.state] : 'Unavailable'}</strong></div></div>
+      <div class="overview-list"><div><span>Temperature probe</span><strong>{!temperature ? 'Unavailable' : temperature.storageError ? 'Storage error' : temperature.calibrated ? 'Calibrated' : 'Factory offset'}</strong></div><div><span>Last calibration</span><strong>{temperature?.timestamp ? date(temperature.timestamp) : 'Not available'}</strong></div><div><span>pH probe</span><strong>{snapshot ? phCalibrationStatus(snapshot.ph) ?? probeLabels[snapshot.ph.state] : 'Unavailable'}</strong></div><div><span>TDS probe</span><strong>{snapshot ? probeLabels[snapshot.tds.state] : 'Unavailable'}</strong></div></div>
     </section>
     <section class="overview-panel overview-advice"><div class="panel-heading"><div><h2>Aquarium notes</h2><p>Tips and recent activity</p></div><button type="button" onClick={() => navigate('journal')}>Journal <span aria-hidden="true">›</span></button></div>
       {data.tips?.length ? <p class="overview-tip">{data.tips[0]}</p> : <p class="overview-empty">{online ? 'No tips available.' : 'Device offline.'}</p>}
       {data.events?.slice(0, 2).map(event => <div class="overview-event" key={event.id}><span>{event.text}</span><small>{date(event.timestamp)}</small></div>)}
     </section>
-    <section class="overview-panel overview-alerts"><div class="panel-heading"><div><h2>Alerts &amp; notifications</h2><p>Temperature alert status</p></div><button type="button" onClick={() => navigate('alerts')}>Manage <span aria-hidden="true">›</span></button></div>
+    <section class="overview-panel overview-alerts"><div class="panel-heading"><div><h2>Alerts &amp; notifications</h2><p>Probe alert status</p></div><button type="button" onClick={() => navigate('alerts')}>Manage <span aria-hidden="true">›</span></button></div>
       <div class="overview-status"><span class={`status-dot ${alert?.temperature === 'normal' && !alert.settingsError ? 'good' : ''}`} /><strong>{alertText}</strong></div>
+      {(['ph', 'tds'] as const).map(probe => { const warning = alert?.[probe]; return warning && warning !== 'normal' ? <div class="overview-status" key={probe}><span class="status-dot" /><strong>{probe === 'ph' ? 'pH' : 'TDS'}: {warning === 'signal_fault' ? 'Check signal or connection' : warning === 'out_of_range' ? 'Out of range' : 'Unstable'}</strong></div> : null })}
       <p class="overview-empty">{data.events?.find(event => event.kind === 'alert' || event.kind === 'recovery')?.text ?? 'No recent alert events available.'}</p>
     </section>
     <section class="overview-panel overview-system"><div class="panel-heading"><div><h2>System &amp; device</h2><p>Connection and diagnostics</p></div><button type="button" onClick={() => navigate('system')}>Details <span aria-hidden="true">›</span></button></div>

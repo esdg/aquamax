@@ -16,7 +16,7 @@ type CalibrationData = { temperature: Temperature; ph: PhCalibration; tds: TdsCa
 
 const labels: Record<ProbeState, string> = {
   connected: 'Connected', disconnected: 'Disconnected', unstable: 'Unstable',
-  out_of_range: 'Out of range', disabled: 'Not enabled',
+  out_of_range: 'Out of range', disabled: 'Not enabled', signal_fault: 'Check signal or connection', waiting: 'Waiting for measurement',
 }
 
 export function Calibration({ timezone }: { timezone: string }) {

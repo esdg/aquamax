@@ -52,6 +52,13 @@ notification integrations remain unfinished.
   repeat limiting and a separate probe-fault alert. Thresholds default to off
   until the owner selects a suitable range. A 100-entry journal stores notes
   and alert transitions; its timestamps are omitted when time is unknown.
+- The Settings page can disable monitoring for individual probes without
+  erasing calibration. pH and TDS signal, out-of-range and unstable warnings
+  are debounced and recorded in the journal. Planned measurement pauses and
+  calibration are not faults. Analog voltage alone cannot reliably establish
+  whether a pH or TDS probe is attached; a signal fault is not proof of a
+  disconnected probe. The TDS range and calibration depend on the assumed
+  sensor model.
 - Versioned, checksummed settings storage in NVS with native fake-storage tests.
   Timezone and temperature alert settings persist across reboot on the board.
 - Settings and System pages provide timezone selection, diagnostics, a
@@ -215,7 +222,8 @@ build. It samples TDS roughly once per minute, pauses pH during TDS power and
 recovery, and provides a portal calibration. The GPIO-powered board and ADC
 signal still require electrical verification across startup, shutdown and
 switching; a fail-off software timer is not a hardware safety mechanism.
-Configuration export does not include TDS calibration. Estimates and
+Configuration export does not include TDS calibration or probe monitoring
+settings. Estimates and
 calibration depend on the assumed sensor model and 0.5 TDS scale; voltage
 alone does not prove a probe is connected.
 

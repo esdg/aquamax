@@ -38,6 +38,9 @@ constexpr uint32_t calibrationWriteIntervalMs = 5000;
 constexpr uint32_t alertWriteIntervalMs = 5000;
 constexpr uint32_t journalWriteIntervalMs = 1000;
 constexpr uint32_t systemWriteIntervalMs = 5000;
+constexpr uint8_t monitorTemperature = 1;
+constexpr uint8_t monitorPh = 2;
+constexpr uint8_t monitorTds = 4;
 std::atomic<bool> networkTimeReceived{false};
 
 struct WifiCredentials {
@@ -59,6 +62,8 @@ const char* stateName(ProbeState state) {
         case ProbeState::unstable: return "unstable";
         case ProbeState::out_of_range: return "out_of_range";
         case ProbeState::disabled: return "disabled";
+        case ProbeState::signal_fault: return "signal_fault";
+        case ProbeState::waiting: return "waiting";
     }
     return "unknown";
 }
@@ -82,6 +87,16 @@ const char* alertEventName(AlertEvent event) {
         case AlertEvent::recovered: return "recovered";
     }
     return "none";
+}
+
+const char* probeWarningName(ProbeWarning warning) {
+    switch (warning) {
+        case ProbeWarning::normal: return "normal";
+        case ProbeWarning::signalFault: return "signal_fault";
+        case ProbeWarning::outOfRange: return "out_of_range";
+        case ProbeWarning::unstable: return "unstable";
+    }
+    return "normal";
 }
 
 bool parseFloat(const String& text, float& value) {
@@ -123,6 +138,13 @@ bool allowedOrigin(const String& origin) {
 }
 
 void DashboardPreview::begin() {
+    Preferences monitoringStorage;
+    if (monitoringStorage.begin("aquamax", false)) {
+        const uint8_t mask = monitoringStorage.getUChar("monitor", 7);
+        if (mask <= 7) monitoringMask_.store(mask);
+        else monitoringStorageError_ = true;
+        monitoringStorage.end();
+    } else monitoringStorageError_ = true;
 #if defined(AQUAMAX_TDS_PROBE)
     digitalWrite(pins::tdsEnable, LOW);
     pinMode(pins::tdsEnable, OUTPUT);
@@ -187,6 +209,8 @@ void DashboardPreview::begin() {
     server_.on("/jumbo.jpg", HTTP_GET, [this] { serveAsset("/jumbo.jpg", "image/jpeg"); });
     server_.on("/api/state", HTTP_GET, [this] { serveState(); });
     server_.on("/api/timezone", HTTP_POST, [this] { setTimezone(); });
+    server_.on("/api/monitoring", HTTP_GET, [this] { serveMonitoring(); });
+    server_.on("/api/monitoring", HTTP_POST, [this] { changeMonitoring(); });
     server_.on("/api/history", HTTP_GET, [this] { serveHistory(false); });
     server_.on("/api/history/export.csv", HTTP_GET, [this] { serveHistory(true); });
     server_.on("/api/history/status", HTTP_GET, [this] { serveHistoryStatus(); });
@@ -499,6 +523,77 @@ void DashboardPreview::setTimezone() {
     server_.send(200, "application/json", "{\"ok\":true}");
 }
 
+void DashboardPreview::serveMonitoring() {
+    const uint8_t mask = monitoringMask_.load();
+    String response = F("{\"temperature\":"); response += mask & monitorTemperature ? "true" : "false";
+    response += F(",\"ph\":"); response += mask & monitorPh ? "true" : "false";
+    response += F(",\"tds\":"); response += mask & monitorTds ? "true" : "false";
+#if defined(AQUAMAX_PH_PROBE)
+    response += F(",\"phAvailable\":true");
+#else
+    response += F(",\"phAvailable\":false");
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    response += F(",\"tdsAvailable\":true");
+#else
+    response += F(",\"tdsAvailable\":false");
+#endif
+    response += F(",\"storageError\":"); response += monitoringStorageError_ ? "true" : "false";
+    response += '}';
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::changeMonitoring() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    const String temperature = server_.arg("temperature");
+    const String ph = server_.arg("ph");
+    const String tds = server_.arg("tds");
+    if ((temperature != "0" && temperature != "1") || (ph != "0" && ph != "1") || (tds != "0" && tds != "1")) {
+        server_.send(400, "text/plain", "Invalid monitoring settings"); return;
+    }
+#if defined(AQUAMAX_PH_PROBE)
+    if (phCalibrationSession_.active()) { server_.send(409, "text/plain", "Finish pH calibration first"); return; }
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    if (tdsCalibrationActive_ || !tdsQuiet_) { server_.send(409, "text/plain", "Finish the current TDS operation first"); return; }
+#endif
+    const uint8_t mask = (temperature == "1" ? monitorTemperature : 0) | (ph == "1" ? monitorPh : 0) | (tds == "1" ? monitorTds : 0);
+    const uint8_t previousMask = monitoringMask_.load();
+    if (mask == previousMask && !monitoringStorageError_) { serveMonitoring(); return; }
+    const uint32_t now = millis();
+    if (monitoringWritten_ && now - lastMonitoringWriteMs_ < systemWriteIntervalMs) { server_.send(429, "text/plain", "Try again shortly"); return; }
+    Preferences storage;
+    if (!storage.begin("aquamax", false)) { server_.send(503, "text/plain", "Monitoring settings unavailable"); return; }
+    const bool saved = storage.putUChar("monitor", mask) == sizeof(mask);
+    storage.end();
+    monitoringWritten_ = true;
+    lastMonitoringWriteMs_ = now;
+    if (!saved) { monitoringStorageError_ = true; server_.send(503, "text/plain", "Monitoring settings could not be saved"); return; }
+    monitoringStorageError_ = false;
+    monitoringMask_.store(mask);
+#if defined(AQUAMAX_PH_PROBE)
+    if (!(mask & monitorPh)) {
+        if (phConversionPending_) phAdc_.cancel();
+        phConversionPending_ = false;
+        phAdcHasValue_ = false;
+        phChannel_ = PhChannel{};
+        phReading_ = PhReading{};
+    }
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    if (!(mask & monitorTds)) { tdsHasVoltage_ = false; tdsStable_ = false; }
+#endif
+    portENTER_CRITICAL(&snapshotMutex_);
+    if (!(mask & monitorTemperature)) snapshot_.temperature = {ProbeState::disabled, false, 0.0f, 0};
+    if (!(mask & monitorPh)) snapshot_.ph = {ProbeState::disabled, false, 0.0f, 0};
+    else if (!(previousMask & monitorPh)) snapshot_.ph = {ProbeState::waiting, false, 0.0f, 0};
+    if (!(mask & monitorTds)) snapshot_.tds = {ProbeState::disabled, false, 0.0f, 0};
+    else if (!(previousMask & monitorTds)) snapshot_.tds = {ProbeState::waiting, false, 0.0f, 0};
+    portEXIT_CRITICAL(&snapshotMutex_);
+    serveMonitoring();
+}
+
 String DashboardPreview::stateJson() {
     portENTER_CRITICAL(&snapshotMutex_);
     const SensorSnapshot snapshot = snapshot_;
@@ -511,6 +606,10 @@ String DashboardPreview::stateJson() {
     response += stateName(snapshot.ph.state);
     response += F("\",\"value\":");
     response += snapshot.ph.hasValue && millis() - snapshot.ph.lastSeenMs < 3000 ? String(snapshot.ph.value, 2) : String("null");
+#if defined(AQUAMAX_PH_PROBE)
+    response += F(",\"calibrated\":"); response += snapshot.ph.calibrated ? "true" : "false";
+    response += F(",\"calibrationError\":"); response += snapshot.ph.calibrationError ? "true" : "false";
+#endif
     response += F("},\"tds\":{\"state\":\"");
     response += stateName(snapshot.tds.state);
     response += F("\",\"value\":");
@@ -559,6 +658,19 @@ String DashboardPreview::stateJson() {
     response += String(alertSequence_);
     response += F(",\"settingsError\":");
     response += alertSettingsError_ ? "true" : "false";
+    response += F(",\"ph\":\"");
+#if defined(AQUAMAX_PH_PROBE)
+    response += probeWarningName(phCalibrationSession_.active() ? ProbeWarning::normal : phWarnings_.state());
+#else
+    response += F("normal");
+#endif
+    response += F("\",\"tds\":\"");
+#if defined(AQUAMAX_TDS_PROBE)
+    response += probeWarningName(tdsCalibrationActive_ ? ProbeWarning::normal : tdsWarnings_.state());
+#else
+    response += F("normal");
+#endif
+    response += '"';
     response += '}';
     response += '}';
     return response;
@@ -752,6 +864,35 @@ void DashboardPreview::updateAlerts(uint32_t now) {
                                               result.event == AlertEvent::recovered ? JournalKind::recovery : JournalKind::alert, text);
         }
     }
+#if defined(AQUAMAX_PH_PROBE)
+    bool phPaused = phCalibrationSession_.active();
+#if defined(AQUAMAX_TDS_PROBE)
+    phPaused = phPaused || !tdsQuiet_;
+#endif
+    const bool phChanged = phWarnings_.update(now, snapshot.ph.state, phPaused, 10000);
+    if (phChanged && (monitoringMask_.load() & monitorPh) && journalReady_) {
+        const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+        const ProbeWarning warning = phWarnings_.state();
+        const char* text = warning == ProbeWarning::signalFault ? "pH signal or connection fault" :
+                           warning == ProbeWarning::outOfRange ? "pH measurement out of range" :
+                           warning == ProbeWarning::unstable ? "pH measurement unstable" : "pH signal recovered";
+        journalReady_ = eventJournal_.add(clock.synchronized ? clock.unixSeconds : 0,
+                                          warning == ProbeWarning::normal ? JournalKind::recovery : JournalKind::alert, text);
+    }
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    const bool tdsPaused = tdsCalibrationActive_ || phCalibrationSession_.active() || !tdsQuiet_;
+    const bool tdsChanged = tdsWarnings_.update(now, snapshot.tds.state, tdsPaused, 90000);
+    if (tdsChanged && (monitoringMask_.load() & monitorTds) && journalReady_) {
+        const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+        const ProbeWarning warning = tdsWarnings_.state();
+        const char* text = warning == ProbeWarning::signalFault ? "TDS signal or connection fault" :
+                           warning == ProbeWarning::outOfRange ? "TDS measurement out of range" :
+                           warning == ProbeWarning::unstable ? "TDS measurement unstable" : "TDS signal recovered";
+        journalReady_ = eventJournal_.add(clock.synchronized ? clock.unixSeconds : 0,
+                                          warning == ProbeWarning::normal ? JournalKind::recovery : JournalKind::alert, text);
+    }
+#endif
 }
 
 void DashboardPreview::serveAlerts() {
@@ -766,7 +907,9 @@ void DashboardPreview::serveAlerts() {
     response += F(",\"repeatSeconds\":"); response += String(alertConfig_.repeatMs / 1000);
     response += F(",\"state\":\""); response += alertStateName(temperatureAlertState_);
     response += F("\"},\"settingsError\":"); response += alertSettingsError_ ? "true" : "false";
-    response += F(",\"ph\":\"disabled\",\"tds\":\"disabled\"}");
+    response += F(",\"ph\":\""); response += probeWarningName(phWarnings_.state());
+    response += F("\",\"tds\":\""); response += probeWarningName(tdsWarnings_.state());
+    response += F("\"}");
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(200, "application/json", response);
 }
@@ -961,10 +1104,15 @@ void DashboardPreview::serveCalibration() {
     response += F(",\"storageError\":");
     response += temperatureCalibrationError_ ? "true" : "false";
     response += F("},\"ph\":{\"state\":\"");
+#if defined(AQUAMAX_PH_PROBE)
+    response += stateName(phCalibrationSession_.active() ? phReading_.state : snapshot.ph.state);
+#else
     response += stateName(snapshot.ph.state);
+#endif
     response += '"';
 #if defined(AQUAMAX_PH_PROBE)
-    response += F(",\"enabled\":true,\"adcVolts\":");
+    response += F(",\"enabled\":"); response += monitoringMask_.load() & monitorPh ? "true" : "false";
+    response += F(",\"adcVolts\":");
     response += phAdcHasValue_ ? String(phAdcVolts_, 4) : String("null");
     response += F(",\"boardVolts\":");
     response += phReading_.hasBoardVolts ? String(phReading_.boardVolts, 4) : String("null");
@@ -984,10 +1132,15 @@ void DashboardPreview::serveCalibration() {
     response += F(",\"enabled\":false");
 #endif
     response += F("},\"tds\":{\"state\":\"");
+#if defined(AQUAMAX_TDS_PROBE)
+    response += stateName(tdsCalibrationActive_ && tdsHasVoltage_ ? (tdsStable_ ? ProbeState::connected : ProbeState::unstable) : snapshot.tds.state);
+#else
     response += stateName(snapshot.tds.state);
+#endif
     response += '"';
 #if defined(AQUAMAX_TDS_PROBE)
-    response += F(",\"enabled\":true,\"adcVolts\":");
+    response += F(",\"enabled\":"); response += monitoringMask_.load() & monitorTds ? "true" : "false";
+    response += F(",\"adcVolts\":");
     response += tdsHasVoltage_ && millis() - tdsLastSampleMs_ < 75000 ? String(tdsVoltage_, 4) : String("null");
     response += F(",\"stable\":"); response += tdsStable_ && millis() - tdsLastSampleMs_ < 75000 ? "true" : "false";
     response += F(",\"calibrated\":"); response += tdsCalibration_.calibrated && !tdsCalibrationError_ ? "true" : "false";
@@ -1015,6 +1168,7 @@ void DashboardPreview::changePhCalibration() {
 #endif
     const String action = server_.arg("action");
     if (action == "start") {
+        if (!(monitoringMask_.load() & monitorPh)) { server_.send(409, "text/plain", "pH monitoring is disabled"); return; }
         if (phCalibrationError_) { server_.send(503, "text/plain", "pH calibration storage unavailable"); return; }
         phCalibrationSession_.start();
         phChannel_ = PhChannel{};
@@ -1172,7 +1326,8 @@ void DashboardPreview::serveHistory(bool csv) {
 
 void DashboardPreview::update(uint32_t now) {
     const TemperatureSample sample = temperature_.update(now);
-    const SensorSnapshot temperatureSnapshot = sensorBuilder_.updateTemperature({sample.state, sample.hasValue, sample.valueC, sample.lastSeenMs}, temperatureOffset_.load());
+    const bool temperatureEnabled = monitoringMask_.load() & monitorTemperature;
+    const SensorSnapshot temperatureSnapshot = sensorBuilder_.updateTemperature(temperatureEnabled ? TemperatureReading{sample.state, sample.hasValue, sample.valueC, sample.lastSeenMs} : TemperatureReading{ProbeState::disabled, false, 0.0f, 0}, temperatureOffset_.load());
     portENTER_CRITICAL(&snapshotMutex_);
     snapshot_.temperature = temperatureSnapshot.temperature;
     const SensorSnapshot snapshot = snapshot_;
@@ -1221,7 +1376,13 @@ void DashboardPreview::updatePhProbe(uint32_t now) {
 #if defined(AQUAMAX_TDS_PROBE)
     if (!tdsQuiet_) return;
 #endif
-    if (!phWireReady_) return;
+    if (!(monitoringMask_.load() & monitorPh)) return;
+    if (!phWireReady_) {
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot_.ph = {ProbeState::signal_fault, false, 0.0f, 0};
+        portEXIT_CRITICAL(&snapshotMutex_);
+        return;
+    }
     if (phConversionPending_) {
         int16_t raw = 0;
         const AdcResult result = phAdc_.poll(now, raw);
@@ -1232,10 +1393,12 @@ void DashboardPreview::updatePhProbe(uint32_t now) {
             phAdcVolts_ = adsRawToVolts(raw);
             phReading_ = phChannel_.update(phAdcVolts_, phVoltageLimits_, phCalibrationSession_.active() ? PhCalibration{} : phCalibration_, true);
             portENTER_CRITICAL(&snapshotMutex_);
-            snapshot_.ph.state = phReading_.state;
+            snapshot_.ph.state = phCalibrationSession_.active() ? ProbeState::waiting : phReading_.state;
             snapshot_.ph.hasValue = phReading_.hasValue && !phCalibrationError_ && !phCalibrationSession_.active();
             snapshot_.ph.value = phReading_.ph;
             snapshot_.ph.lastSeenMs = now;
+            snapshot_.ph.calibrated = phCalibration_.valid && !phCalibrationError_;
+            snapshot_.ph.calibrationError = phCalibrationError_;
             portEXIT_CRITICAL(&snapshotMutex_);
         } else if (result == AdcResult::error) {
             phConversionPending_ = false;
@@ -1244,7 +1407,7 @@ void DashboardPreview::updatePhProbe(uint32_t now) {
             phChannel_ = PhChannel{};
             phReading_ = PhReading{};
             portENTER_CRITICAL(&snapshotMutex_);
-            snapshot_.ph = {ProbeState::disconnected, false, 0.0f, 0};
+            snapshot_.ph = {ProbeState::signal_fault, false, 0.0f, 0};
             portEXIT_CRITICAL(&snapshotMutex_);
         }
     } else if (now - lastPhSampleMs_ >= 1000) {
@@ -1256,7 +1419,7 @@ void DashboardPreview::updatePhProbe(uint32_t now) {
             phChannel_ = PhChannel{};
             phReading_ = PhReading{};
             portENTER_CRITICAL(&snapshotMutex_);
-            snapshot_.ph = {ProbeState::disconnected, false, 0.0f, 0};
+            snapshot_.ph = {ProbeState::signal_fault, false, 0.0f, 0};
             portEXIT_CRITICAL(&snapshotMutex_);
         }
     }
@@ -1278,6 +1441,7 @@ void DashboardPreview::changeTdsCalibration() {
     if (action == "cancel") {
         tdsCalibrationActive_ = false;
     } else if (action == "start") {
+        if (!(monitoringMask_.load() & monitorTds)) { server_.send(409, "text/plain", "TDS monitoring is disabled"); return; }
         if (tdsCalibrationError_ || !tdsPowerTimer_) { server_.send(503, "text/plain", "TDS calibration unavailable"); return; }
         if (phCalibrationSession_.active() || !tdsQuiet_) { server_.send(409, "text/plain", "Another measurement is in progress"); return; }
         tdsCalibrationActive_ = true;
@@ -1285,6 +1449,7 @@ void DashboardPreview::changeTdsCalibration() {
         tdsStable_ = false;
         portENTER_CRITICAL(&snapshotMutex_);
         snapshot_.tds.hasValue = false;
+        snapshot_.tds.state = ProbeState::waiting;
         portEXIT_CRITICAL(&snapshotMutex_);
     } else if (action == "save") {
         const uint32_t now = millis();
@@ -1315,9 +1480,18 @@ void DashboardPreview::changeTdsCalibration() {
 }
 
 void DashboardPreview::updateTdsProbe(uint32_t now) {
-    const bool enabled = tdsPowerTimer_ && phWireReady_ && !phCalibrationSession_.active() && !rebootPending_;
+    const bool monitored = monitoringMask_.load() & monitorTds;
+    const bool enabled = monitored && tdsPowerTimer_ && phWireReady_ && !phCalibrationSession_.active() && !rebootPending_;
     const MeasurementWindow window = tdsScheduler_.update(now, enabled);
     tdsQuiet_ = !enabled || window.samplePh;
+    if (!enabled && !tdsPowerOn_) {
+        if (!monitored || !tdsPowerTimer_ || !phWireReady_) {
+            portENTER_CRITICAL(&snapshotMutex_);
+            snapshot_.tds = {monitored ? ProbeState::signal_fault : ProbeState::disabled, false, 0.0f, 0};
+            portEXIT_CRITICAL(&snapshotMutex_);
+        }
+        return;
+    }
     portENTER_CRITICAL(&tdsPowerMutex_);
     const bool expired = tdsPowerExpired_;
     portEXIT_CRITICAL(&tdsPowerMutex_);
@@ -1329,7 +1503,7 @@ void DashboardPreview::updateTdsProbe(uint32_t now) {
         phChannel_ = PhChannel{};
         phReading_ = PhReading{};
         portENTER_CRITICAL(&snapshotMutex_);
-        snapshot_.ph = {ProbeState::disabled, false, 0.0f, 0};
+        snapshot_.ph = {monitoringMask_.load() & monitorPh ? ProbeState::waiting : ProbeState::disabled, false, 0.0f, 0};
         portEXIT_CRITICAL(&snapshotMutex_);
         tdsSampleCount_ = 0;
         tdsSampleIndex_ = 0;
@@ -1342,7 +1516,7 @@ void DashboardPreview::updateTdsProbe(uint32_t now) {
             tdsHasVoltage_ = false;
             tdsStable_ = false;
             portENTER_CRITICAL(&snapshotMutex_);
-            snapshot_.tds = {ProbeState::disconnected, false, 0.0f, 0};
+            snapshot_.tds = {ProbeState::signal_fault, false, 0.0f, 0};
             portEXIT_CRITICAL(&snapshotMutex_);
         } else {
             tdsPowerOn_ = true;
@@ -1386,7 +1560,8 @@ void DashboardPreview::updateTdsProbe(uint32_t now) {
         const bool valid = tdsHasVoltage_ && !tdsCalibrationError_ &&
                            tdsEstimate(voltage, temperature.valueC, tdsCalibration_.factor, ppm) && ppm <= 1000.0f;
         portENTER_CRITICAL(&snapshotMutex_);
-        snapshot_.tds.state = !tdsHasVoltage_ ? ProbeState::out_of_range : !tdsStable_ ? ProbeState::unstable : valid ? ProbeState::connected : ProbeState::out_of_range;
+        const bool aboveSignalRange = !tdsCycleFailed_ && tdsSampleCount_ == 8 && std::isfinite(voltage) && voltage > 2.3f;
+        snapshot_.tds.state = tdsCalibrationActive_ ? ProbeState::waiting : aboveSignalRange ? ProbeState::out_of_range : !tdsHasVoltage_ || tdsCalibrationError_ ? ProbeState::signal_fault : !tdsStable_ ? ProbeState::unstable : valid ? ProbeState::connected : ProbeState::out_of_range;
         snapshot_.tds.hasValue = valid && tdsStable_ && !tdsCalibrationActive_;
         snapshot_.tds.value = ppm;
         snapshot_.tds.lastSeenMs = now;
