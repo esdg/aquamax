@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include "calibration/PhCalibration.h"
 #include "calibration/Compensation.h"
+#include "settings/TdsCalibrationStore.h"
 #include "calibration/PhCalibrationRecord.h"
 #include "sensors/PhChannel.h"
 #include "settings/PhCalibrationStore.h"
@@ -176,6 +177,40 @@ void test_temperature_compensation_and_explicit_fallback() {
     TEST_ASSERT_FALSE(aquamax::temperatureCompensatedTds(1.0f, 25.0f, 0.0f, ppm));
 }
 
+void test_tds_voltage_and_reference_calibration() {
+    float ppm = 0.0f;
+    float factor = 0.0f;
+    TEST_ASSERT_TRUE(aquamax::tdsEstimate(0.39f, 25.0f, 1.0f, ppm));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 151.6901f, ppm);
+    TEST_ASSERT_TRUE(aquamax::tdsCalibrationFactor(0.39f, 25.0f, 200.0f, factor));
+    TEST_ASSERT_TRUE(aquamax::tdsEstimate(0.39f, 25.0f, factor, ppm));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 200.0f, ppm);
+    TEST_ASSERT_FALSE(aquamax::tdsCalibrationFactor(0.0f, 25.0f, 707.0f, factor));
+    TEST_ASSERT_FALSE(aquamax::tdsCalibrationFactor(0.39f, 25.0f, 0.0f, factor));
+    TEST_ASSERT_FALSE(aquamax::tdsEstimate(2.31f, 25.0f, 1.0f, ppm));
+    TEST_ASSERT_FALSE(aquamax::tdsEstimate(-0.1f, 25.0f, 1.0f, ppm));
+    TEST_ASSERT_FALSE(aquamax::tdsEstimate(0.39f, 25.0f, 4.1f, ppm));
+}
+
+void test_tds_calibration_storage() {
+    aquamax::TdsCalibrationStore store;
+    aquamax::TdsCalibration calibration;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::TdsCalibrationLoad::defaults), static_cast<int>(store.load(calibration)));
+    TEST_ASSERT_FALSE(calibration.calibrated);
+    TEST_ASSERT_TRUE(store.save({1.25f, 1234, true}));
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::TdsCalibrationLoad::loaded), static_cast<int>(store.load(calibration)));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.25f, calibration.factor);
+    TEST_ASSERT_TRUE(calibration.calibrated);
+    TEST_ASSERT_FALSE(store.save({5.0f, 0, true}));
+    Preferences::failWrite = true;
+    TEST_ASSERT_FALSE(store.save({0.8f, 0, true}));
+    Preferences::failWrite = false;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::TdsCalibrationLoad::loaded), static_cast<int>(store.load(calibration)));
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.25f, calibration.factor);
+    Preferences::bytes[0] ^= 1;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::TdsCalibrationLoad::error), static_cast<int>(store.load(calibration)));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_negative_slope_and_baseline_health);
@@ -188,5 +223,7 @@ int main() {
     RUN_TEST(test_equal_resistor_divider_and_stability_reset);
     RUN_TEST(test_calibration_session_requires_distinct_valid_points_and_can_cancel);
     RUN_TEST(test_temperature_compensation_and_explicit_fallback);
+    RUN_TEST(test_tds_voltage_and_reference_calibration);
+    RUN_TEST(test_tds_calibration_storage);
     return UNITY_END();
 }

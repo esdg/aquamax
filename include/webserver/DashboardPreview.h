@@ -6,6 +6,9 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <esp_ota_ops.h>
+#if defined(AQUAMAX_TDS_DIAGNOSTIC) || defined(AQUAMAX_TDS_PROBE)
+#include <esp_timer.h>
+#endif
 #include <atomic>
 #include <cstdio>
 #include "config/pins.h"
@@ -18,6 +21,10 @@
 #include "hardware/Ads1115.h"
 #include "sensors/PhChannel.h"
 #include "settings/PhCalibrationStore.h"
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+#include "sensors/MeasurementScheduler.h"
+#include "settings/TdsCalibrationStore.h"
 #endif
 #include "sensors/SensorSnapshot.h"
 #include "sensors/TimeZone.h"
@@ -69,6 +76,16 @@ private:
 #if defined(AQUAMAX_PH_PROBE)
     void updatePhProbe(uint32_t now);
 #endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    void changeTdsDiagnostic();
+    void updateTdsDiagnostic(uint32_t now);
+    static void stopTdsDiagnostic(void* context);
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    void updateTdsProbe(uint32_t now);
+    void changeTdsCalibration();
+    static void stopTdsPower(void* context);
+#endif
     static void networkTask(void* context);
     void serveAsset(const char* path, const char* contentType);
     bool onSetupNetwork();
@@ -94,6 +111,44 @@ private:
     bool phCalibrationError_ = false;
     bool phCalibrationWritten_ = false;
     uint32_t lastPhCalibrationWriteMs_ = 0;
+#endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    esp_timer_handle_t tdsDiagnosticTimer_ = nullptr;
+    portMUX_TYPE tdsDiagnosticMutex_ = portMUX_INITIALIZER_UNLOCKED;
+    bool tdsDiagnosticExpired_ = false;
+    bool tdsDiagnosticActive_ = false;
+    bool tdsDiagnosticRecovering_ = false;
+    bool tdsDiagnosticPending_ = false;
+    bool tdsDiagnosticHasValue_ = false;
+    bool tdsDiagnosticAdcError_ = false;
+    float tdsDiagnosticVolts_ = 0.0f;
+    uint32_t tdsDiagnosticSampleMs_ = 0;
+    uint32_t tdsDiagnosticStoppedMs_ = 0;
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    MeasurementScheduler tdsScheduler_{{60000, 1500, 1000, 2000}};
+    TdsCalibrationStore tdsCalibrationStore_;
+    TdsCalibration tdsCalibration_;
+    esp_timer_handle_t tdsPowerTimer_ = nullptr;
+    portMUX_TYPE tdsPowerMutex_ = portMUX_INITIALIZER_UNLOCKED;
+    bool tdsPowerExpired_ = false;
+    bool tdsPowerOn_ = false;
+    bool tdsQuiet_ = true;
+    bool tdsPending_ = false;
+    bool tdsCycleFailed_ = false;
+    bool tdsHasVoltage_ = false;
+    bool tdsStable_ = false;
+    bool tdsUsedDefaultTemperature_ = true;
+    bool tdsCalibrationActive_ = false;
+    bool tdsCalibrationError_ = false;
+    bool tdsCalibrationWritten_ = false;
+    float tdsVoltage_ = 0.0f;
+    float tdsTemperatureC_ = 25.0f;
+    float tdsSamples_[8] = {};
+    uint8_t tdsSampleCount_ = 0;
+    uint8_t tdsSampleIndex_ = 0;
+    uint32_t tdsLastSampleMs_ = 0;
+    uint32_t lastTdsCalibrationWriteMs_ = 0;
 #endif
     SensorSnapshotBuilder sensorBuilder_;
     SensorSnapshot snapshot_;

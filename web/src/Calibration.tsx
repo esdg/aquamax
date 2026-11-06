@@ -11,7 +11,8 @@ type PhCalibration = {
   stable?: boolean; calibrated?: boolean; storageError?: boolean; active?: boolean
   points?: { ph: number; boardVolts: number }[]
 }
-type CalibrationData = { temperature: Temperature; ph: PhCalibration; tds: { state: ProbeState } }
+type TdsCalibration = { state: ProbeState; enabled?: boolean; adcVolts?: number | null; stable?: boolean; calibrated?: boolean; storageError?: boolean; active?: boolean; temperatureC?: number; defaultTemperature?: boolean }
+type CalibrationData = { temperature: Temperature; ph: PhCalibration; tds: TdsCalibration }
 
 const labels: Record<ProbeState, string> = {
   connected: 'Connected', disconnected: 'Disconnected', unstable: 'Unstable',
@@ -22,6 +23,8 @@ export function Calibration({ timezone }: { timezone: string }) {
   const [data, setData] = useState<CalibrationData | null>(null)
   const [reference, setReference] = useState('')
   const [phReference, setPhReference] = useState('6.86')
+  const [tdsReference, setTdsReference] = useState('707')
+  const [tdsMessage, setTdsMessage] = useState('')
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [notice, setNotice] = useState('')
@@ -79,6 +82,22 @@ export function Calibration({ timezone }: { timezone: string }) {
     } catch (reason) { setActionError(reason instanceof Error ? reason.message : 'pH calibration could not be updated') }
     finally { setBusy(false) }
   }
+  const tds = data?.tds
+  const tdsReferenceValue = Number(tdsReference)
+  const canSaveTds = tds?.active && tds.stable && tds.adcVolts != null && tdsReference.trim() !== '' &&
+    Number.isFinite(tdsReferenceValue) && tdsReferenceValue > 0 && tdsReferenceValue <= 1000
+  const changeTds = async (action: 'start' | 'save' | 'cancel') => {
+    setBusy(true); setTdsMessage('')
+    try {
+      const body = new URLSearchParams(action === 'save' ? { action, referencePpm: tdsReference } : { action })
+      const response = await fetch('/api/calibration/tds', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+      if (!response.ok) throw new Error(await response.text())
+      if (action === 'save') setTdsMessage('TDS calibration saved.')
+      if (action === 'cancel') setTdsMessage('TDS calibration cancelled.')
+      setRevision(value => value + 1)
+    } catch (reason) { setTdsMessage(reason instanceof Error ? reason.message : 'TDS calibration could not be updated') }
+    finally { setBusy(false) }
+  }
   const date = temperature?.timestamp ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: timezone }).format(temperature.timestamp * 1000) : 'Date unavailable'
 
   return <section class="calibration-view">
@@ -109,11 +128,25 @@ export function Calibration({ timezone }: { timezone: string }) {
             <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={!canCapturePh || busy}>Capture buffer</button><button type="button" disabled={phPoints.length < 2 || busy} onClick={() => void changePh('save')}>Save calibration</button><button type="button" class="calibration-reset" disabled={busy} onClick={() => void changePh('cancel')}>Cancel</button></div>
           </form>}
         </div>}
+        {tds?.enabled && <div class="ph-calibration">
+          <div class="calibration-section-title"><div><span class="device-label">03 / TDS</span><h2>Reference solution</h2></div><span class={`probe-badge ${tds.state === 'connected' ? 'ready' : ''}`}>{tds.state === 'connected' ? 'Signal available' : labels[tds.state]}</span></div>
+          <p class="calibration-instruction">Rinse the probe, place it in a known TDS standard and allow it to settle before starting. Enter the standard's ppm value at 25 °C on the 0.5 TDS scale.</p>
+          <div class="calibration-readings"><div><span>SIGNAL</span><strong>{tds.adcVolts != null ? `${tds.adcVolts.toFixed(3)} V` : '--'}</strong></div><div><span>STABILITY</span><strong>{tds.stable ? 'Stable' : 'Waiting'}</strong></div><div><span>CALIBRATION</span><strong>{tds.calibrated ? 'Saved' : 'Estimate'}</strong></div></div>
+          <p class="calibration-instruction">Temperature: {tds.temperatureC != null ? `${tds.temperatureC.toFixed(1)} °C` : '--'}{tds.defaultTemperature ? ' (25 °C assumed; use a 25 °C solution for calibration)' : ' (measured)'}.</p>
+          {tds.storageError && <p class="calibration-error" role="alert">TDS calibration storage is unavailable.</p>}
+          {!tds.active ? <div class="calibration-actions"><button class="calibration-primary" type="button" disabled={busy || tds.storageError} onClick={() => void changeTds('start')}>Start calibration</button></div> : <form class="calibration-form" onSubmit={event => { event.preventDefault(); void changeTds('save') }}>
+            <label for="tds-reference">Reference TDS</label>
+            <div class="reference-input"><input id="tds-reference" type="number" step="0.1" min="1" max="1000" inputMode="decimal" value={tdsReference} onInput={event => setTdsReference(event.currentTarget.value)} /><span>ppm</span></div>
+            <small>A fresh measurement can take up to 60 seconds.</small>
+            <div class="calibration-actions"><button class="calibration-primary" type="submit" disabled={!canSaveTds || busy}>Save calibration</button><button type="button" class="calibration-reset" disabled={busy} onClick={() => void changeTds('cancel')}>Cancel</button></div>
+          </form>}
+          {tdsMessage && <p class="calibration-notice" role="status">{tdsMessage}</p>}
+        </div>}
       </div>
       <aside class="probe-health"><span class="device-label">PROBE HEALTH</span><h2>Channel status</h2>
         <div class="health-row"><div><strong>Temperature</strong><small>{temperature?.lastSeenSecondsAgo != null ? `Last seen ${temperature.lastSeenSecondsAgo} s ago` : 'No valid reading yet'}</small><small>{temperature?.calibrated ? `Calibrated: ${date}` : 'Factory offset'}</small></div><span class={`probe-badge ${temperature?.state === 'connected' ? 'ready' : ''}`}>{temperature ? labels[temperature.state] : 'Waiting'}</span></div>
         <div class="health-row"><div><strong>pH</strong><small>{!ph?.enabled ? 'Not enabled' : ph.calibrated ? 'Calibration saved' : 'Calibration required'}</small></div><span class="probe-badge">{!ph ? 'Waiting' : ph.state === 'connected' ? 'Signal available' : labels[ph.state]}</span></div>
-        <div class="health-row"><div><strong>TDS</strong><small>Calibration unavailable</small></div><span class="probe-badge">{data ? labels[data.tds.state] : 'Waiting'}</span></div>
+        <div class="health-row"><div><strong>TDS</strong><small>{!tds?.enabled ? 'Not enabled' : tds.calibrated ? 'Calibration saved' : 'Uncalibrated estimate'}</small></div><span class="probe-badge">{!tds ? 'Waiting' : tds.state === 'connected' ? 'Signal available' : labels[tds.state]}</span></div>
       </aside>
     </div>
   </section>

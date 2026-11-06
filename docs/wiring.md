@@ -33,7 +33,7 @@ connect a 5 V signal directly to an ESP32 GPIO or a 3.3 V-powered ADS1115.
 | GPIO 8 | SDA on the ADS1115 | I2C data. |
 | GPIO 9 | SCL on the ADS1115 | I2C clock. |
 | GPIO 10 | DS18B20 data via GX16 pin 6 | Add a pull-up to 3.3 V; see below. |
-| GPIO 4 | TDS high-side switch driver input | Provisional active-high control; do not connect directly to TDS VCC. |
+| GPIO 21 | TDS power control | Reported directly connected to TDS VCC; electrical behavior is unverified. A high-side switch is recommended. |
 | GPIO 5 | Cable detect via GX16 pin 8 | Optional; disabled by default. |
 | GPIO 18 | Backlight driver control | Optional; driver and screen wiring must be checked first. |
 | 3V3 | ADS1115 VDD, TFT logic supply, DS18B20 VDD | Also the proposed TDS supply only if its module supports 3.3 V. Check the regulator's available current. |
@@ -76,9 +76,13 @@ pin can be tied to a supply without checking the module.
 
 The opt-in `web_tft_ph_probe` environment uses A1 for pH instead of A0. The
 tested setup uses a 10 kohm resistor from `Po` to A1 and another 10 kohm
-resistor from A1 to common ground, for a nominal ratio of 0.5. TDS on A2 is
-not read or powered by this firmware. Its analog output must remain isolated
-until its voltages and power-off behavior have been verified.
+resistor from A1 to common ground, for a nominal ratio of 0.5. The installed
+TDS setup is reported as signal connected to A2 and VCC directly to GPIO 21;
+`web_tft_ph_probe` does not read A2 or drive GPIO 21. The opt-in
+`web_tft_tds_probe` build does both periodically, then waits for pH recovery.
+That direct connection and the signal's powered-off and transient behavior
+remain unverified. Isolate the signal if necessary until its voltage and
+power-off behavior have been checked.
 
 SDA and SCL require pull-ups to **3.3 V**, typically 4.7 kohm each. Check
 whether the breakout already has suitable pull-ups before adding them; avoid
@@ -201,7 +205,7 @@ electrical review:
                                 |
                                3.3 V
 
-GPIO 4 ---- 1 kohm ----+---- N-MOSFET gate
+GPIO 21 --- 1 kohm ----+---- N-MOSFET gate
                        |
                     100 kohm
                        |
@@ -213,8 +217,8 @@ TDS GND ---- GX16 pin 7 -------- GND
 The N-MOSFET must turn on reliably at 3.3 V gate drive; select the P-MOSFET
 for the rail, current, inrush and gate-voltage limits. Verify MOSFET pinouts
 from their datasheets. The pull-up holds the P-MOSFET off and the pull-down
-holds the N-MOSFET off while GPIO 4 is floating at boot. With this particular
-circuit, GPIO 4 high enables power. A suitable load-switch IC is an alternative
+holds the N-MOSFET off while GPIO 21 is floating at boot. With this particular
+circuit, GPIO 21 high enables power. A suitable load-switch IC is an alternative
 if its input polarity and default-off behavior are accounted for. A 5 V rail
 requires rechecking both MOSFET gate ratings and the module output circuit.
 
@@ -233,7 +237,7 @@ module's supply and output requirements.
 3. Confirm ADS1115 I2C pull-ups go to 3.3 V and ADDR is tied to ground.
 4. Verify the pH and TDS input protection and ensure powered-off modules cannot
    be back-powered through their signal lines.
-5. Verify the TDS switch is off with GPIO 4 unpowered or floating, and check
+5. Verify the TDS switch is off with GPIO 21 unpowered or floating, and check
    backlight drive and power-supply current limits.
 6. Only after the circuit has been reviewed, apply power and measure supply and
    signal voltages with a meter before attaching them to the ESP32 or ADC as

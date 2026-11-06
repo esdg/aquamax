@@ -13,5 +13,7 @@ bool resolveCompensationTemperature(bool fresh, float measuredC, float defaultC,
 bool temperatureCompensatedPh(float adcVolts, const PhVoltageLimits& limits, const PhCalibration& calibration,
                               float calibrationTemperatureC, float waterTemperatureC, float& ph);
 bool temperatureCompensatedTds(float conductivityMicrosiemens, float waterTemperatureC, float factor, float& ppm);
+bool tdsEstimate(float voltage, float waterTemperatureC, float calibrationFactor, float& ppm);
+bool tdsCalibrationFactor(float voltage, float waterTemperatureC, float referencePpm, float& factor);
 
 } // namespace aquamax

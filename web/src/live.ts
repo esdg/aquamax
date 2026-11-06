@@ -3,7 +3,7 @@ export type AlertStatus = { temperature: 'normal' | 'low' | 'high' | 'probe_faul
 export type Snapshot = {
   temperature: { state: ProbeState; valueC: number | null }
   ph: { state: ProbeState; value: number | null }
-  tds: { state: ProbeState; value: number | null }
+  tds: { state: ProbeState; value: number | null; calibrated?: boolean; defaultTemperature?: boolean }
   wifi: 'connected' | 'disconnected'
   uptimeSeconds: number
   time?: { synchronized: boolean; unixSeconds: number | null; local?: string | null; timezone?: string }
@@ -32,6 +32,9 @@ export function isSnapshot(value: unknown): value is Snapshot {
       (channel[key] === null || (typeof channel[key] === 'number' && Number.isFinite(channel[key])))
   }
   const alerts = data.alerts as Record<string, unknown> | undefined
+  const tds = data.tds as Record<string, unknown> | undefined
+  if (tds && ((tds.calibrated !== undefined && typeof tds.calibrated !== 'boolean') ||
+    (tds.defaultTemperature !== undefined && typeof tds.defaultTemperature !== 'boolean'))) return false
   if (alerts !== undefined && (!alerts || typeof alerts !== 'object' ||
     typeof alerts.temperature !== 'string' || !['normal', 'low', 'high', 'probe_fault'].includes(alerts.temperature) ||
     typeof alerts.event !== 'string' || !['none', 'low', 'high', 'probe_fault', 'recovered'].includes(alerts.event) ||

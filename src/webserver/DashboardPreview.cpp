@@ -9,6 +9,7 @@
 #include <esp_system.h>
 #include <stdlib.h>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <time.h>
 #include <unistd.h>
@@ -17,6 +18,9 @@
 #include "sensors/HistoryAggregate.h"
 #if defined(AQUAMAX_PH_PROBE)
 #include "sensors/AdcMath.h"
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+#include "calibration/Compensation.h"
 #endif
 #include "display/TftGauge.h"
 #include "webserver/SetupPage.h"
@@ -119,6 +123,26 @@ bool allowedOrigin(const String& origin) {
 }
 
 void DashboardPreview::begin() {
+#if defined(AQUAMAX_TDS_PROBE)
+    digitalWrite(pins::tdsEnable, LOW);
+    pinMode(pins::tdsEnable, OUTPUT);
+    esp_timer_create_args_t tdsTimerArgs{};
+    tdsTimerArgs.callback = &DashboardPreview::stopTdsPower;
+    tdsTimerArgs.arg = this;
+    tdsTimerArgs.name = "tds-power";
+    if (esp_timer_create(&tdsTimerArgs, &tdsPowerTimer_) != ESP_OK) tdsPowerTimer_ = nullptr;
+    tdsCalibrationError_ = tdsCalibrationStore_.load(tdsCalibration_) == TdsCalibrationLoad::error;
+    tdsScheduler_.update(millis() - 60000u, true);
+#endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    digitalWrite(pins::tdsEnable, LOW);
+    pinMode(pins::tdsEnable, OUTPUT);
+    esp_timer_create_args_t timerArgs{};
+    timerArgs.callback = &DashboardPreview::stopTdsDiagnostic;
+    timerArgs.arg = this;
+    timerArgs.name = "tds-test";
+    if (esp_timer_create(&timerArgs, &tdsDiagnosticTimer_) != ESP_OK) tdsDiagnosticTimer_ = nullptr;
+#endif
 #if defined(AQUAMAX_PH_PROBE)
     phWireReady_ = Wire.begin(pins::i2cSda, pins::i2cScl);
     if (phWireReady_) Wire.setTimeOut(25);
@@ -171,6 +195,12 @@ void DashboardPreview::begin() {
     server_.on("/api/calibration/temp", HTTP_POST, [this] { changeTemperatureCalibration(); });
 #if defined(AQUAMAX_PH_PROBE)
     server_.on("/api/calibration/ph", HTTP_POST, [this] { changePhCalibration(); });
+#endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    server_.on("/api/diagnostic/tds", HTTP_POST, [this] { changeTdsDiagnostic(); });
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    server_.on("/api/calibration/tds", HTTP_POST, [this] { changeTdsCalibration(); });
 #endif
     server_.on("/api/alerts", HTTP_GET, [this] { serveAlerts(); });
     server_.on("/api/alerts", HTTP_POST, [this] { changeAlerts(); });
@@ -483,7 +513,21 @@ String DashboardPreview::stateJson() {
     response += snapshot.ph.hasValue && millis() - snapshot.ph.lastSeenMs < 3000 ? String(snapshot.ph.value, 2) : String("null");
     response += F("},\"tds\":{\"state\":\"");
     response += stateName(snapshot.tds.state);
-    response += F("\",\"value\":null},\"wifi\":\"");
+    response += F("\",\"value\":");
+#if defined(AQUAMAX_TDS_PROBE)
+    if (snapshot.tds.hasValue && millis() - snapshot.tds.lastSeenMs < 75000) {
+        char value[20] = {};
+        std::snprintf(value, sizeof(value), "%.1f", snapshot.tds.value);
+        response += value;
+    } else {
+        response += F("null");
+    }
+    response += F(",\"calibrated\":"); response += tdsCalibration_.calibrated && !tdsCalibrationError_ ? "true" : "false";
+    response += F(",\"defaultTemperature\":"); response += tdsUsedDefaultTemperature_ ? "true" : "false";
+#else
+    response += F("null");
+#endif
+    response += F("},\"wifi\":\"");
     response += WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
     response += F("\",\"uptimeSeconds\":");
     response += String(millis() / 1000);
@@ -541,6 +585,16 @@ void DashboardPreview::serveSystem() {
     response += phAdcError_ ? "\"error\"" : phAdcHasValue_ ? "\"ready\"" : "\"waiting\"";
     response += F(",\"channel\":1,\"adcVolts\":");
     response += phAdcHasValue_ ? String(phAdcVolts_, 4) : String("null");
+    response += '}';
+#endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    response += F(",\"tdsDiagnostic\":\"");
+    response += tdsDiagnosticActive_ ? "active" : tdsDiagnosticRecovering_ ? "recovery" : tdsDiagnosticTimer_ ? "ready" : "unavailable";
+    response += '"';
+    response += F(",\"tdsAdc\":{\"status\":");
+    response += tdsDiagnosticAdcError_ ? "\"error\"" : tdsDiagnosticHasValue_ ? "\"ready\"" : "\"waiting\"";
+    response += F(",\"channel\":2,\"adcVolts\":");
+    response += tdsDiagnosticHasValue_ ? String(tdsDiagnosticVolts_, 4) : String("null");
     response += '}';
 #endif
 #if defined(AQUAMAX_TFT)
@@ -837,7 +891,12 @@ void DashboardPreview::updateHistory(uint32_t now) {
         const bool validTemperature = snapshot.temperature.hasValue && millis() - snapshot.temperature.lastSeenMs < 3000;
         if (!temperatureHistory_.sample(clock.unixSeconds, validTemperature, snapshot.temperature.valueC) ||
             !phHistory_.sample(clock.unixSeconds, snapshot.ph.hasValue && millis() - snapshot.ph.lastSeenMs < 3000, snapshot.ph.value) ||
+#if defined(AQUAMAX_TDS_PROBE)
+            !tdsHistory_.sample(clock.unixSeconds, snapshot.tds.hasValue && tdsCalibration_.calibrated && !tdsCalibrationActive_ &&
+                                millis() - snapshot.tds.lastSeenMs < 75000, snapshot.tds.value)) {
+#else
             !tdsHistory_.sample(clock.unixSeconds, false, 0)) {
+#endif
             Serial.println("History: sampling failed; check storage.");
         }
     }
@@ -924,7 +983,22 @@ void DashboardPreview::serveCalibration() {
 #else
     response += F(",\"enabled\":false");
 #endif
-    response += F("},\"tds\":{\"state\":\"disabled\"}}");
+    response += F("},\"tds\":{\"state\":\"");
+    response += stateName(snapshot.tds.state);
+    response += '"';
+#if defined(AQUAMAX_TDS_PROBE)
+    response += F(",\"enabled\":true,\"adcVolts\":");
+    response += tdsHasVoltage_ && millis() - tdsLastSampleMs_ < 75000 ? String(tdsVoltage_, 4) : String("null");
+    response += F(",\"stable\":"); response += tdsStable_ && millis() - tdsLastSampleMs_ < 75000 ? "true" : "false";
+    response += F(",\"calibrated\":"); response += tdsCalibration_.calibrated && !tdsCalibrationError_ ? "true" : "false";
+    response += F(",\"storageError\":"); response += tdsCalibrationError_ ? "true" : "false";
+    response += F(",\"active\":"); response += tdsCalibrationActive_ ? "true" : "false";
+    response += F(",\"temperatureC\":"); response += String(tdsTemperatureC_, 1);
+    response += F(",\"defaultTemperature\":"); response += tdsUsedDefaultTemperature_ ? "true" : "false";
+#else
+    response += F(",\"enabled\":false");
+#endif
+    response += F("}}");
     server_.sendHeader("Cache-Control", "no-store");
     server_.send(200, "application/json", response);
 }
@@ -932,6 +1006,13 @@ void DashboardPreview::serveCalibration() {
 #if defined(AQUAMAX_PH_PROBE)
 void DashboardPreview::changePhCalibration() {
     if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    if (tdsDiagnosticActive_ || tdsDiagnosticRecovering_) { server_.send(409, "text/plain", "TDS diagnostic in progress"); return; }
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    if (!tdsQuiet_ && server_.arg("action") != "cancel") { server_.send(409, "text/plain", "TDS measurement in progress"); return; }
+    if (tdsCalibrationActive_ && server_.arg("action") != "cancel") { server_.send(409, "text/plain", "TDS calibration in progress"); return; }
+#endif
     const String action = server_.arg("action");
     if (action == "start") {
         if (phCalibrationError_) { server_.send(503, "text/plain", "pH calibration storage unavailable"); return; }
@@ -1134,6 +1215,12 @@ void DashboardPreview::networkTask(void* context) {
 
 #if defined(AQUAMAX_PH_PROBE)
 void DashboardPreview::updatePhProbe(uint32_t now) {
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    if (tdsDiagnosticActive_ || tdsDiagnosticRecovering_) return;
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    if (!tdsQuiet_) return;
+#endif
     if (!phWireReady_) return;
     if (phConversionPending_) {
         int16_t raw = 0;
@@ -1176,7 +1263,250 @@ void DashboardPreview::updatePhProbe(uint32_t now) {
 }
 #endif
 
+#if defined(AQUAMAX_TDS_PROBE)
+void DashboardPreview::stopTdsPower(void* context) {
+    auto* dashboard = static_cast<DashboardPreview*>(context);
+    portENTER_CRITICAL(&dashboard->tdsPowerMutex_);
+    digitalWrite(pins::tdsEnable, LOW);
+    dashboard->tdsPowerExpired_ = true;
+    portEXIT_CRITICAL(&dashboard->tdsPowerMutex_);
+}
+
+void DashboardPreview::changeTdsCalibration() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    const String action = server_.arg("action");
+    if (action == "cancel") {
+        tdsCalibrationActive_ = false;
+    } else if (action == "start") {
+        if (tdsCalibrationError_ || !tdsPowerTimer_) { server_.send(503, "text/plain", "TDS calibration unavailable"); return; }
+        if (phCalibrationSession_.active() || !tdsQuiet_) { server_.send(409, "text/plain", "Another measurement is in progress"); return; }
+        tdsCalibrationActive_ = true;
+        tdsHasVoltage_ = false;
+        tdsStable_ = false;
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot_.tds.hasValue = false;
+        portEXIT_CRITICAL(&snapshotMutex_);
+    } else if (action == "save") {
+        const uint32_t now = millis();
+        if (tdsCalibrationError_) { server_.send(503, "text/plain", "TDS calibration storage unavailable"); return; }
+        if (!tdsCalibrationActive_ || !tdsQuiet_ || !tdsHasVoltage_ || !tdsStable_ || now - tdsLastSampleMs_ >= 75000) {
+            server_.send(409, "text/plain", "Wait for a stable TDS measurement"); return;
+        }
+        if (tdsCalibrationWritten_ && now - lastTdsCalibrationWriteMs_ < calibrationWriteIntervalMs) {
+            server_.send(429, "text/plain", "Try again shortly"); return;
+        }
+        float reference = 0.0f;
+        float factor = 0.0f;
+        if (!parseFloat(server_.arg("referencePpm"), reference) || !tdsCalibrationFactor(tdsVoltage_, tdsTemperatureC_, reference, factor)) {
+            server_.send(400, "text/plain", "Invalid reference or TDS signal"); return;
+        }
+        const ClockStatus clock = clockStatus(static_cast<int64_t>(time(nullptr)), networkTimeReceived.load());
+        const TdsCalibration candidate{factor, clock.synchronized ? clock.unixSeconds : 0, true};
+        tdsCalibrationWritten_ = true;
+        lastTdsCalibrationWriteMs_ = now;
+        if (!tdsCalibrationStore_.save(candidate)) { server_.send(503, "text/plain", "TDS calibration could not be saved"); return; }
+        tdsCalibration_ = candidate;
+        tdsCalibrationActive_ = false;
+    } else {
+        server_.send(400, "text/plain", "Invalid action"); return;
+    }
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void DashboardPreview::updateTdsProbe(uint32_t now) {
+    const bool enabled = tdsPowerTimer_ && phWireReady_ && !phCalibrationSession_.active() && !rebootPending_;
+    const MeasurementWindow window = tdsScheduler_.update(now, enabled);
+    tdsQuiet_ = !enabled || window.samplePh;
+    portENTER_CRITICAL(&tdsPowerMutex_);
+    const bool expired = tdsPowerExpired_;
+    portEXIT_CRITICAL(&tdsPowerMutex_);
+    if (tdsPowerOn_ && expired) tdsCycleFailed_ = true;
+    if (window.tdsPower && !tdsPowerOn_ && !tdsCycleFailed_) {
+        phAdc_.cancel();
+        phConversionPending_ = false;
+        phAdcHasValue_ = false;
+        phChannel_ = PhChannel{};
+        phReading_ = PhReading{};
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot_.ph = {ProbeState::disabled, false, 0.0f, 0};
+        portEXIT_CRITICAL(&snapshotMutex_);
+        tdsSampleCount_ = 0;
+        tdsSampleIndex_ = 0;
+        tdsPending_ = false;
+        portENTER_CRITICAL(&tdsPowerMutex_);
+        tdsPowerExpired_ = false;
+        portEXIT_CRITICAL(&tdsPowerMutex_);
+        if (esp_timer_start_once(tdsPowerTimer_, 5000000) != ESP_OK) {
+            tdsCycleFailed_ = true;
+            tdsHasVoltage_ = false;
+            tdsStable_ = false;
+            portENTER_CRITICAL(&snapshotMutex_);
+            snapshot_.tds = {ProbeState::disconnected, false, 0.0f, 0};
+            portEXIT_CRITICAL(&snapshotMutex_);
+        } else {
+            tdsPowerOn_ = true;
+            portENTER_CRITICAL(&tdsPowerMutex_);
+            if (!tdsPowerExpired_) digitalWrite(pins::tdsEnable, HIGH);
+            portEXIT_CRITICAL(&tdsPowerMutex_);
+        }
+    }
+    if (tdsPowerOn_ && (!window.tdsPower || tdsCycleFailed_)) {
+        esp_timer_stop(tdsPowerTimer_);
+        stopTdsPower(this);
+        phAdc_.cancel();
+        tdsPending_ = false;
+        tdsPowerOn_ = false;
+        float voltage = 0.0f;
+        float minimum = 0.0f;
+        float maximum = 0.0f;
+        for (uint8_t index = 0; index < tdsSampleCount_; ++index) {
+            const float sample = tdsSamples_[index];
+            if (index == 0 || sample < minimum) minimum = sample;
+            if (index == 0 || sample > maximum) maximum = sample;
+            voltage += sample;
+        }
+        if (tdsSampleCount_) voltage /= tdsSampleCount_;
+        if (voltage < 0.0f && voltage >= -0.01f) voltage = 0.0f;
+        SensorSnapshot snapshot;
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot = snapshot_;
+        portEXIT_CRITICAL(&snapshotMutex_);
+        const bool tempFresh = snapshot.temperature.hasValue && now - snapshot.temperature.lastSeenMs < 3000 &&
+                               snapshot.temperature.valueC >= -5.0f && snapshot.temperature.valueC <= 60.0f;
+        CompensationTemperature temperature;
+        resolveCompensationTemperature(tempFresh, snapshot.temperature.valueC, 25.0f, temperature);
+        tdsTemperatureC_ = temperature.valueC;
+        tdsUsedDefaultTemperature_ = temperature.usedDefault;
+        tdsHasVoltage_ = !tdsCycleFailed_ && tdsSampleCount_ == 8 && voltage >= 0.0f && voltage <= 2.3f;
+        tdsStable_ = tdsHasVoltage_ && maximum - minimum <= 0.02f;
+        tdsVoltage_ = voltage;
+        tdsLastSampleMs_ = now;
+        float ppm = 0.0f;
+        const bool valid = tdsHasVoltage_ && !tdsCalibrationError_ &&
+                           tdsEstimate(voltage, temperature.valueC, tdsCalibration_.factor, ppm) && ppm <= 1000.0f;
+        portENTER_CRITICAL(&snapshotMutex_);
+        snapshot_.tds.state = !tdsHasVoltage_ ? ProbeState::out_of_range : !tdsStable_ ? ProbeState::unstable : valid ? ProbeState::connected : ProbeState::out_of_range;
+        snapshot_.tds.hasValue = valid && tdsStable_ && !tdsCalibrationActive_;
+        snapshot_.tds.value = ppm;
+        snapshot_.tds.lastSeenMs = now;
+        snapshot_.tds.calibrated = tdsCalibration_.calibrated;
+        portEXIT_CRITICAL(&snapshotMutex_);
+    }
+    if (!window.tdsPower) tdsCycleFailed_ = false;
+    if (!window.tdsPower || !window.sampleTds || tdsCycleFailed_ || !tdsPowerOn_) return;
+    if (tdsPending_) {
+        int16_t raw = 0;
+        const AdcResult result = phAdc_.poll(now, raw);
+        if (result == AdcResult::ready) {
+            tdsPending_ = false;
+            tdsSamples_[tdsSampleIndex_] = adsRawToVolts(raw);
+            tdsSampleIndex_ = (tdsSampleIndex_ + 1) % 8;
+            if (tdsSampleCount_ < 8) ++tdsSampleCount_;
+        } else if (result == AdcResult::error) {
+            tdsPending_ = false;
+            tdsCycleFailed_ = true;
+        }
+    } else {
+        tdsPending_ = phAdc_.start(2, now);
+        if (!tdsPending_) tdsCycleFailed_ = true;
+    }
+}
+#endif
+
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+void DashboardPreview::stopTdsDiagnostic(void* context) {
+    auto* dashboard = static_cast<DashboardPreview*>(context);
+    portENTER_CRITICAL(&dashboard->tdsDiagnosticMutex_);
+    digitalWrite(pins::tdsEnable, LOW);
+    dashboard->tdsDiagnosticExpired_ = true;
+    portEXIT_CRITICAL(&dashboard->tdsDiagnosticMutex_);
+}
+
+void DashboardPreview::changeTdsDiagnostic() {
+    if (!allowedOrigin(server_.header("Origin"))) { server_.send(403, "text/plain", "Request rejected"); return; }
+    const String action = server_.arg("action");
+    if (action == "stop") {
+        if (tdsDiagnosticActive_) {
+            esp_timer_stop(tdsDiagnosticTimer_);
+            stopTdsDiagnostic(this);
+        }
+        server_.send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+    if (action != "start" || server_.arg("confirm") != "yes") { server_.send(400, "text/plain", "Invalid action"); return; }
+    if (!tdsDiagnosticTimer_ || tdsDiagnosticActive_ || tdsDiagnosticRecovering_ || phCalibrationSession_.active() || rebootPending_) {
+        server_.send(409, "text/plain", "Diagnostic unavailable"); return;
+    }
+    phAdc_.cancel();
+    phConversionPending_ = false;
+    phAdcHasValue_ = false;
+    phChannel_ = PhChannel{};
+    phReading_ = PhReading{};
+    portENTER_CRITICAL(&snapshotMutex_);
+    snapshot_.ph = {ProbeState::disabled, false, 0.0f, 0};
+    portEXIT_CRITICAL(&snapshotMutex_);
+    portENTER_CRITICAL(&tdsDiagnosticMutex_);
+    tdsDiagnosticExpired_ = false;
+    portEXIT_CRITICAL(&tdsDiagnosticMutex_);
+    tdsDiagnosticPending_ = false;
+    tdsDiagnosticHasValue_ = false;
+    tdsDiagnosticAdcError_ = false;
+    tdsDiagnosticSampleMs_ = millis();
+    tdsDiagnosticActive_ = true;
+    if (esp_timer_start_once(tdsDiagnosticTimer_, 30000000) != ESP_OK) {
+        tdsDiagnosticActive_ = false;
+        server_.send(503, "text/plain", "Timer unavailable"); return;
+    }
+    portENTER_CRITICAL(&tdsDiagnosticMutex_);
+    if (!tdsDiagnosticExpired_) digitalWrite(pins::tdsEnable, HIGH);
+    portEXIT_CRITICAL(&tdsDiagnosticMutex_);
+    server_.send(200, "application/json", "{\"ok\":true,\"seconds\":30}");
+}
+
+void DashboardPreview::updateTdsDiagnostic(uint32_t now) {
+    portENTER_CRITICAL(&tdsDiagnosticMutex_);
+    const bool expired = tdsDiagnosticExpired_;
+    portEXIT_CRITICAL(&tdsDiagnosticMutex_);
+    if (tdsDiagnosticActive_ && expired) {
+        phAdc_.cancel();
+        tdsDiagnosticPending_ = false;
+        tdsDiagnosticActive_ = false;
+        tdsDiagnosticRecovering_ = true;
+        tdsDiagnosticStoppedMs_ = now;
+    } else if (tdsDiagnosticRecovering_ && now - tdsDiagnosticStoppedMs_ >= 2000) {
+        tdsDiagnosticRecovering_ = false;
+    } else if (tdsDiagnosticActive_ && tdsDiagnosticPending_) {
+        int16_t raw = 0;
+        const AdcResult result = phAdc_.poll(now, raw);
+        if (result == AdcResult::ready) {
+            tdsDiagnosticPending_ = false;
+            tdsDiagnosticHasValue_ = true;
+            tdsDiagnosticAdcError_ = false;
+            tdsDiagnosticVolts_ = adsRawToVolts(raw);
+        } else if (result == AdcResult::error) {
+            tdsDiagnosticPending_ = false;
+            tdsDiagnosticHasValue_ = false;
+            tdsDiagnosticAdcError_ = true;
+        }
+    } else if (tdsDiagnosticActive_ && now - tdsDiagnosticSampleMs_ >= 1000) {
+        tdsDiagnosticSampleMs_ = now;
+        tdsDiagnosticPending_ = phAdc_.start(2, now);
+        if (!tdsDiagnosticPending_) {
+            tdsDiagnosticHasValue_ = false;
+            tdsDiagnosticAdcError_ = true;
+        }
+    }
+}
+#endif
+
 void DashboardPreview::updateNetwork(uint32_t now) {
+#if defined(AQUAMAX_TDS_PROBE)
+    updateTdsProbe(now);
+#endif
+#if defined(AQUAMAX_TDS_DIAGNOSTIC)
+    updateTdsDiagnostic(now);
+#endif
 #if defined(AQUAMAX_PH_PROBE)
     updatePhProbe(now);
 #endif

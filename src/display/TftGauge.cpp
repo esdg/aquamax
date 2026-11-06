@@ -47,6 +47,9 @@ public:
 #if defined(AQUAMAX_PH_PROBE)
 		, ph_({0.0f, 14.0f})
 #endif
+#if defined(AQUAMAX_TDS_PROBE)
+		, tds_({0.0f, 1000.0f})
+#endif
 	{
 		auto busConfig = bus_.config();
 		busConfig.spi_host = SPI2_HOST;
@@ -160,6 +163,9 @@ public:
 #if defined(AQUAMAX_PH_PROBE)
 			phDrawn_ = false;
 #endif
+#if defined(AQUAMAX_TDS_PROBE)
+			tdsDrawn_ = false;
+#endif
 			drawStatic(false, false, icons::drop_off_32, "pH", "pH");
 			drawValue({}, "Not enabled");
 			canvas_.pushSprite(&displays_[1], 0, 0);
@@ -191,6 +197,24 @@ public:
 			canvas_.pushSprite(&displays_[1], 0, 0);
 			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
 			phDrawn_ = true;
+		}
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+		if (!tdsDrawn_ || nowMs - lastTdsFrameMs_ >= 1000) {
+			lastTdsFrameMs_ = nowMs;
+			const bool tdsFresh = snapshot.tds.hasValue && nowMs - snapshot.tds.lastSeenMs < 75000;
+			const GaugeFrame tdsFrame = tds_.update(snapshot.tds.state, tdsFresh, snapshot.tds.value, false, nowMs);
+			drawStatic(tdsFrame.hasValue, false, tdsFrame.hasValue ? icons::three_drops_32 : icons::three_drops_off_32, "ppm", "TDS");
+			const char* tdsStatus = tdsFrame.state == ProbeState::connected ? "Waiting" : tdsFrame.state == ProbeState::disabled ? "Not enabled" : "Check signal";
+			drawValue(tdsFrame, tdsStatus);
+			if (tdsFrame.hasValue && !snapshot.tds.calibrated) {
+				canvas_.setFont(&fonts::Font0);
+				canvas_.setTextColor(mutedColor, backgroundColor);
+				canvas_.drawString("Estimate", center, 229);
+			}
+			canvas_.pushSprite(&displays_[2], 0, 0);
+			drawStatic(frame.hasValue, frame.alert, frame.hasValue ? icons::thermometer_32 : icons::thermometer_off_32, "C", "TEMPERATURE");
+			tdsDrawn_ = true;
 		}
 #endif
 	}
@@ -279,6 +303,11 @@ private:
 	GaugeModel ph_;
 	uint32_t lastPhFrameMs_ = 0;
 	bool phDrawn_ = false;
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+	GaugeModel tds_;
+	uint32_t lastTdsFrameMs_ = 0;
+	bool tdsDrawn_ = false;
 #endif
 	TftSetupInfo previousSetup_;
 	Mode mode_ = Mode::none;

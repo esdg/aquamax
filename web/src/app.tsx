@@ -36,13 +36,13 @@ function initialTheme(): ThemePreference {
   } catch { return 'system' }
 }
 
-function Gauge({ name, unit, value, state, icon, mutedIcon, maximum }: {
+function Gauge({ name, unit, value, state, icon, mutedIcon, maximum, quality }: {
   name: string; unit: string; value: number | null; state: ProbeState | null;
-  icon: string; mutedIcon: string; maximum: number
+  icon: string; mutedIcon: string; maximum: number; quality?: string
 }) {
   const active = state === 'connected' && value !== null && Number.isFinite(value)
   const angle = (135 + Math.max(0, Math.min(1, (value ?? 0) / maximum)) * 270) * Math.PI / 180
-  const label = state === null ? 'Awaiting device' : state === 'connected' && !active ? 'Waiting for reading' : stateLabels[state]
+  const label = active && quality ? quality : state === null ? 'Awaiting device' : state === 'connected' && !active ? 'Waiting for reading' : stateLabels[state]
   const v = Math.min(1, Math.max(0, value ?? 0));
 const visible = Math.round(v * SEGMENTS);
   return (
@@ -171,7 +171,7 @@ export function App() {
         <div class="overview-grid"><section class="overview-panel overview-readings"><div class="panel-heading"><div><h2>Live readings</h2><p>Real-time water parameters</p></div><span class="live-label"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} /> {status === 'online' ? 'LIVE' : status === 'loading' ? 'CONNECTING' : 'OFFLINE'}</span></div><div class="metrics">
           <Gauge name="Temperature" unit="°C" value={snapshot?.temperature.valueC ?? null} state={snapshot?.temperature.state ?? null} icon={thermometer} mutedIcon={thermometerOff} maximum={40} />
           <Gauge name="pH" unit="pH" value={snapshot?.ph.value ?? null} state={snapshot?.ph.state ?? null} icon={drop} mutedIcon={dropOff} maximum={14} />
-          <Gauge name="TDS" unit="ppm" value={snapshot?.tds.value ?? null} state={snapshot?.tds.state ?? null} icon={drops} mutedIcon={dropsOff} maximum={1000} />
+          <Gauge name="TDS" unit="ppm" value={snapshot?.tds.value ?? null} state={snapshot?.tds.state ?? null} icon={drops} mutedIcon={dropsOff} maximum={1000} quality={snapshot?.tds.calibrated === false ? (snapshot.tds.defaultTemperature ? 'Estimate · 25°C assumed' : 'Estimate') : snapshot?.tds.defaultTemperature ? '25°C assumed' : undefined} />
         </div></section><section class="overview-panel overview-history"><div class="panel-heading"><div><h2>History</h2><p>Water parameters over time</p></div><button type="button" onClick={() => setPage('history')}>View all <span aria-hidden="true">›</span></button></div>{status === 'online' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} compact /> : <p class="history-placeholder">{status === 'loading' ? 'Connecting to device...' : 'History unavailable while offline.'}</p>}</section><Overview snapshot={snapshot} online={status === 'online'} timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} navigate={setPage} /></div>
         </> : page === 'history' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'calibration' ? <Calibration timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'alerts' ? <Alerts live={snapshot?.alerts} browserEnabled={browserEnabled} onBrowserChange={changeBrowserNotifications} /> : page === 'journal' ? <Journal timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} /> : page === 'settings' ? <Settings timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} pending={timezonePending} error={timezoneError} online={status === 'online'} timezones={timezones} onTimezone={zone => void changeTimezone(zone)} theme={theme} onTheme={setTheme} /> : <System />}
       </main>

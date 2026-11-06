@@ -38,6 +38,12 @@ notification integrations remain unfinished.
   voltage responded to a vinegar test on one board. Calibrated pH accuracy,
   persistence on the real device and the pH TFT remain unverified. A plausible
   voltage cannot prove the probe is connected. TDS remains disabled.
+- The opt-in `web_tft_tds_probe` build adds timed TDS power on GPIO 21 and
+  ADS1115 A2 sampling, with a pH recovery period. Uncalibrated values are
+  estimates and use 25 C when temperature is unavailable. TDS calibration uses
+  a 25 C reference in ppm on the 0.5 scale; only calibrated values enter TDS
+  history. Direct GPIO power, the TDS TFT and real calibration persistence
+  remain unverified; see the wiring guide.
 - The dashboard provides a stable-reading-gated temperature reference
   adjustment and probe status. Its calibration record has native persistence
   tests; an actual reference calibration and physical NVS persistence still
@@ -203,6 +209,15 @@ and a separately verified board output range. It reports no numeric pH until
 two or three distinct, stable buffer readings have been captured and saved on
 the Calibration page. pH temperature compensation is not implemented. The
 system configuration export does not currently include pH calibration.
+
+For the reported A2/GPIO 21 TDS setup, `web_tft_tds_probe` extends the pH
+build. It samples TDS roughly once per minute, pauses pH during TDS power and
+recovery, and provides a portal calibration. The GPIO-powered board and ADC
+signal still require electrical verification across startup, shutdown and
+switching; a fail-off software timer is not a hardware safety mechanism.
+Configuration export does not include TDS calibration. Estimates and
+calibration depend on the assumed sensor model and 0.5 TDS scale; voltage
+alone does not prove a probe is connected.
 
 This initializes all three proposed TFT chip selects and the shared reset,
 clock, data and DC pins. It does not initialize GPIO 18 or drive `BLK`.
@@ -470,7 +485,7 @@ voltage ranges, backlight current and cable pin numbering before use.
 | TFT CS: temperature, pH, TDS | 17, 16, 15 |
 | ADS1115 SDA, SCL | 8, 9 |
 | DS18B20 data | 10 |
-| TDS power-switch control | 4 |
+| TDS power control | 21 |
 | Optional cable detect | 5 |
 | Optional backlight driver | 18 |
 

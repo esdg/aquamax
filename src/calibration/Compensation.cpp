@@ -37,4 +37,21 @@ bool temperatureCompensatedTds(float conductivityMicrosiemens, float waterTemper
     return true;
 }
 
+bool tdsEstimate(float voltage, float waterTemperatureC, float calibrationFactor, float& ppm) {
+    if (!std::isfinite(voltage) || voltage < 0.0f || voltage > 2.3f ||
+        !std::isfinite(calibrationFactor) || calibrationFactor < 0.25f || calibrationFactor > 4.0f) return false;
+    const float conductivity = voltage * (857.39f + voltage * (-255.86f + voltage * 133.42f));
+    return temperatureCompensatedTds(conductivity, waterTemperatureC, calibrationFactor * 0.5f, ppm);
+}
+
+bool tdsCalibrationFactor(float voltage, float waterTemperatureC, float referencePpm, float& factor) {
+    float estimate = 0.0f;
+    if (!std::isfinite(referencePpm) || referencePpm <= 0.0f || referencePpm > 1000.0f ||
+        !tdsEstimate(voltage, waterTemperatureC, 1.0f, estimate) || estimate < 5.0f) return false;
+    const float candidate = referencePpm / estimate;
+    if (!std::isfinite(candidate) || candidate < 0.25f || candidate > 4.0f) return false;
+    factor = candidate;
+    return true;
+}
+
 } // namespace aquamax
