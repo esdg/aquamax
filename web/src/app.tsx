@@ -6,9 +6,8 @@ import drop from '../../assets/icons/drop.svg?raw'
 import dropOff from '../../assets/icons/drop-off.svg?raw'
 import drops from '../../assets/icons/three-drops.svg?raw'
 import dropsOff from '../../assets/icons/three-drops-off.svg?raw'
-import { startLiveFeed } from './live'
-import { phCalibrationStatus } from './live'
-import type { ProbeState, ProbeWarning, Snapshot } from './live'
+import { gaugeHoldMs, phCalibrationStatus, startLiveFeed, updateGaugeHold } from './live'
+import type { GaugeHold, ProbeState, ProbeWarning, Snapshot } from './live'
 import { History } from './History'
 import { Calibration } from './Calibration'
 import { Alerts } from './Alerts'
@@ -38,19 +37,33 @@ function initialTheme(): ThemePreference {
   } catch { return 'system' }
 }
 
-function Gauge({ name, unit, value, state, icon, mutedIcon, maximum, quality, missingLabel }: {
+function Gauge({ name, unit, value, state, icon, mutedIcon, maximum, quality, missingLabel, blocked = false }: {
   name: string; unit: string; value: number | null; state: ProbeState | null;
-  icon: string; mutedIcon: string; maximum: number; quality?: string; missingLabel?: string
+  icon: string; mutedIcon: string; maximum: number; quality?: string; missingLabel?: string; blocked?: boolean
 }) {
-  const active = state === 'connected' && value !== null && Number.isFinite(value)
-  const angle = (135 + Math.max(0, Math.min(1, (value ?? 0) / maximum)) * 270) * Math.PI / 180
-  const label = active && quality ? quality : state === null ? 'Awaiting device' : state === 'connected' && !active ? missingLabel ?? 'Waiting for reading' : state === 'disconnected' && name !== 'Temperature' ? 'Check signal or connection' : stateLabels[state]
-  const v = Math.min(1, Math.max(0, value ?? 0));
+  const [held, setHeld] = useState<GaugeHold | null>(null)
+  const previous = useRef<GaugeHold | null>(null)
+  useEffect(() => {
+    const now = Date.now()
+    const next = updateGaugeHold(previous.current, state, value, now, blocked || !!missingLabel)
+    previous.current = next
+    setHeld(next)
+    if (next?.missingSince == null) return
+    const timer = window.setTimeout(() => { previous.current = null; setHeld(null) }, Math.max(0, gaugeHoldMs - (now - next.missingSince)))
+    return () => window.clearTimeout(timer)
+  }, [state, value, blocked, missingLabel])
+  const live = state === 'connected' && value !== null && Number.isFinite(value)
+  const holding = !live && !blocked && !missingLabel && (state === 'waiting' || state === 'connected') && held !== null
+  const shownValue = live ? value : holding ? held.value : null
+  const active = shownValue !== null
+  const angle = (135 + Math.max(0, Math.min(1, (shownValue ?? 0) / maximum)) * 270) * Math.PI / 180
+  const label = holding ? 'Last reading · updating' : active && quality ? quality : state === null ? 'Awaiting device' : state === 'connected' && !active ? missingLabel ?? 'Waiting for reading' : state === 'disconnected' && name !== 'Temperature' ? 'Check signal or connection' : stateLabels[state]
+  const v = Math.min(1, Math.max(0, shownValue ?? 0));
 const visible = Math.round(v * SEGMENTS);
   return (
     <article class={`metric ${active ? 'metric-active' : 'metric-muted'}`}>
       <div class="metric-heading"><span>{name}</span><span class="metric-number">{name === 'Temperature' ? '01' : name === 'pH' ? '02' : '03'}</span></div>
-      <div class="gauge" role="img" aria-label={`${name}: ${active ? `${value!.toFixed(2)} ${unit}` : 'no reading'}, ${label}`}>
+      <div class="gauge" role="img" aria-label={`${name}: ${active ? `${shownValue.toFixed(2)} ${unit}` : 'no reading'}, ${label}`}>
       <svg className="gauge-ring" viewBox="0 0 200 200" aria-hidden="true">
       {/* gray track */}
       <path
@@ -77,11 +90,11 @@ const visible = Math.round(v * SEGMENTS);
     </svg>
         <div class="gauge-content">
           {state === 'out_of_range' ? <span class="probe-icon probe-range"><TriangleAlert aria-hidden="true" /></span> : state === 'signal_fault' ? <span class="probe-icon probe-fault"><CircleX aria-hidden="true" /></span> : <span class="probe-icon" dangerouslySetInnerHTML={{ __html: active ? icon : mutedIcon }} />}
-          <strong class="gauge-value">{active ? value!.toFixed(1) : '--'}</strong>
+          <strong class="gauge-value">{active ? shownValue.toFixed(1) : '--'}</strong>
           <span class="gauge-unit">{unit}</span>
         </div>
       </div>
-      <div class="metric-footer"><span class={`status-dot ${active ? 'good' : ''}`} /><span>{label}</span></div>
+      <div class="metric-footer"><span class={`status-dot ${holding ? 'pending' : active ? 'good' : ''}`} /><span>{label}</span></div>
     </article>
   )
 }
@@ -184,7 +197,7 @@ export function App() {
         {(['ph', 'tds'] as const).map(probe => { const warning = snapshot?.alerts?.[probe]; return warning && warning !== 'normal' ? <div class="active-alert" role="alert" key={probe}><strong>{probe === 'ph' ? 'pH' : 'TDS'} warning</strong><span>{warningLabels[warning]}</span><button type="button" onClick={() => setPage('alerts')}>View alerts</button></div> : null })}
         {snapshot?.alerts?.settingsError && <p class="calibration-error" role="alert">Alert settings could not be loaded. Temperature thresholds are disabled.</p>}
         <div class="overview-grid"><section class="overview-panel overview-readings"><div class="panel-heading"><div><h2>Live readings</h2><p>Real-time water parameters</p></div><span class="live-label"><span class={`status-dot ${status === 'online' ? 'good' : ''}`} /> {status === 'online' ? 'LIVE' : status === 'loading' ? 'CONNECTING' : 'OFFLINE'}</span></div><div class="metrics">
-          <Gauge name="Temperature" unit="°C" value={snapshot?.temperature.valueC ?? null} state={snapshot?.temperature.state ?? null} icon={thermometer} mutedIcon={thermometerOff} maximum={40} />
+          <Gauge name="Temperature" unit="°C" value={snapshot?.temperature.valueC ?? null} state={snapshot?.temperature.state ?? null} icon={thermometer} mutedIcon={thermometerOff} maximum={40} blocked={snapshot?.alerts?.temperature === 'probe_fault'} />
           <Gauge name="pH" unit="pH" value={snapshot?.ph.value ?? null} state={snapshot?.ph.state ?? null} icon={drop} mutedIcon={dropOff} maximum={14} missingLabel={phCalibrationStatus(snapshot?.ph)} />
           <Gauge name="TDS" unit="ppm" value={snapshot?.tds.value ?? null} state={snapshot?.tds.state ?? null} icon={drops} mutedIcon={dropsOff} maximum={1000} quality={snapshot?.tds.calibrated === false ? (snapshot.tds.defaultTemperature ? 'Estimate · 25°C assumed' : 'Estimate') : snapshot?.tds.defaultTemperature ? '25°C assumed' : undefined} />
         </div></section><section class="overview-panel overview-history"><div class="panel-heading"><div><h2>History</h2><p>Water parameters over time</p></div><button type="button" onClick={() => setPage('history')}>View all <span aria-hidden="true">›</span></button></div>{status === 'online' ? <History timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} tdsUncalibrated={snapshot?.tds.state !== 'disabled' && snapshot?.tds.calibrated === false} onCalibration={() => setPage('calibration')} compact /> : <p class="history-placeholder">{status === 'loading' ? 'Connecting to device...' : 'History unavailable while offline.'}</p>}</section><Overview snapshot={snapshot} online={status === 'online'} timezone={snapshot?.time?.timezone ?? 'Europe/Paris'} navigate={setPage} /></div>

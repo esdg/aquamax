@@ -16,6 +16,16 @@ export function phCalibrationStatus(ph: Snapshot['ph'] | undefined): string | un
   return ph.calibrationError ? 'Calibration storage error' : ph.calibrated === false ? 'Calibration required' : undefined
 }
 
+export const gaugeHoldMs = 10000
+export type GaugeHold = { value: number; missingSince: number | null }
+
+export function updateGaugeHold(previous: GaugeHold | null, state: ProbeState | null, value: number | null, now: number, blocked: boolean): GaugeHold | null {
+  if (state === 'connected' && value !== null && Number.isFinite(value)) return { value, missingSince: null }
+  if (blocked || !previous || (state !== 'waiting' && state !== 'connected')) return null
+  const missingSince = previous.missingSince ?? now
+  return now - missingSince < gaugeHoldMs ? { value: previous.value, missingSince } : null
+}
+
 type Socket = Pick<WebSocket, 'close' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'>
 type LiveOptions = {
   socket: () => Socket

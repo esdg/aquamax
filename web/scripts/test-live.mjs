@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { isSnapshot, phCalibrationStatus, startLiveFeed } from '../src/live.ts'
+import { gaugeHoldMs, isSnapshot, phCalibrationStatus, startLiveFeed, updateGaugeHold } from '../src/live.ts'
 
 const snapshot = valueC => ({
   temperature: { state: 'connected', valueC },
@@ -112,4 +112,18 @@ test('pH calibration status does not hide signal faults or ordinary waiting', ()
   assert.equal(phCalibrationStatus({ state: 'signal_fault', value: null, calibrated: false }), undefined)
   assert.equal(phCalibrationStatus({ state: 'waiting', value: null, calibrated: false }), undefined)
   assert.equal(phCalibrationStatus({ state: 'disabled', value: null, calibrated: false }), undefined)
+})
+
+test('gauge holds the last reading briefly for waiting, but not faults or calibration errors', () => {
+  const good = updateGaugeHold(null, 'connected', 7.2, 100, false)
+  const waiting = updateGaugeHold(good, 'waiting', null, 200, false)
+  assert.deepEqual(waiting, { value: 7.2, missingSince: 200 })
+  assert.deepEqual(updateGaugeHold(waiting, 'connected', null, 5000, false), waiting)
+  assert.equal(updateGaugeHold(waiting, 'waiting', null, 200 + gaugeHoldMs, false), null)
+  for (const state of ['disconnected', 'signal_fault', 'unstable', 'out_of_range', 'disabled', null]) {
+    assert.equal(updateGaugeHold(good, state, null, 200, false), null)
+  }
+  assert.equal(updateGaugeHold(good, 'connected', null, 200, true), null)
+  assert.deepEqual(updateGaugeHold(waiting, 'connected', 7.4, 5000, false), { value: 7.4, missingSince: null })
+  assert.equal(updateGaugeHold(null, 'waiting', null, 200, false), null)
 })
