@@ -42,6 +42,9 @@ public:
 
 private:
     void startSetup();
+    void stopSetup();
+    void serveNetworkSetup();
+    void changeNetworkSetup();
     void serveSetup();
     void serveSetupNetworks();
     void serveSetupStatus();
@@ -191,6 +194,7 @@ private:
     String pendingPassword_;
     uint32_t attemptStarted_ = 0;
     uint32_t connectedSince_ = 0;
+    uint32_t manualSetupStarted_ = 0;
     uint32_t lastSubmit_ = 0;
     uint32_t connectRequested_ = 0;
     uint32_t lastSensorReportMs_ = 0;
@@ -208,6 +212,7 @@ private:
     bool connectQueued_ = false;
     bool attempting_ = false;
     bool setupActive_ = false;
+    std::atomic<bool> manualSetup_{false};
     bool mdnsStarted_ = false;
     bool connected_ = false;
     bool setupFailed_ = false;

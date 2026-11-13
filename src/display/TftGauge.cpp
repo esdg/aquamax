@@ -171,8 +171,12 @@ public:
 		pushSprite(canvas_, displays_[1], 0, 0);
 	}
 
-	void update(const SensorSnapshot& snapshot, bool alert, uint32_t nowMs) {
-		if (mode_ != Mode::gauges) {
+	void updateSideGauges(const SensorSnapshot& snapshot, bool alert, uint32_t nowMs) {
+		if (mode_ == Mode::setup && drawn_) update(snapshot, alert, nowMs, true);
+	}
+
+	void update(const SensorSnapshot& snapshot, bool alert, uint32_t nowMs, bool sideOnly = false) {
+		if (mode_ != Mode::gauges && !sideOnly) {
 			previousSetup_ = {};
 			mode_ = Mode::gauges;
 			drawn_ = false;
@@ -208,7 +212,7 @@ public:
 		pushSprite(canvas_, displays_[0], 0, 0);
 		drawn_ = true;
 #if defined(AQUAMAX_PH_PROBE)
-		if (!phDrawn_ || nowMs - lastPhFrameMs_ >= 1000) {
+		if (!sideOnly && (!phDrawn_ || nowMs - lastPhFrameMs_ >= 1000)) {
 			lastPhFrameMs_ = nowMs;
 			const bool phFresh = snapshot.ph.hasValue && nowMs - snapshot.ph.lastSeenMs < 3000;
 			const GaugeFrame phFrame = ph_.update(snapshot.ph.state, phFresh, snapshot.ph.value, false, nowMs);
@@ -377,6 +381,9 @@ void showTftSplash(uint32_t elapsedMs) { if (ready) displays.splash(elapsedMs); 
 void showTftSetup(const TftSetupInfo& setup) { if (ready) displays.setup(setup); }
 void updateTftGauges(const SensorSnapshot& snapshot, bool temperatureAlert, uint32_t nowMs) {
 	if (ready) displays.update(snapshot, temperatureAlert, nowMs);
+}
+void updateTftSetupSideGauges(const SensorSnapshot& snapshot, bool temperatureAlert, uint32_t nowMs) {
+	if (ready) displays.updateSideGauges(snapshot, temperatureAlert, nowMs);
 }
 }
 #endif

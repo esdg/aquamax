@@ -8,7 +8,10 @@ void StartupModel::begin(uint32_t nowMs, bool hasSavedWifi) {
     finished_ = false;
 }
 
-StartupScreen StartupModel::update(uint32_t nowMs, bool wifiConnected, bool wifiTimedOut) {
+StartupScreen StartupModel::update(uint32_t nowMs, bool wifiConnected, bool wifiTimedOut,
+                                  bool setupAvailable, bool setupRequested) {
+    if ((finished_ || nowMs - startedMs_ >= animationCycleMs) && setupAvailable &&
+        (setupRequested || !wifiConnected)) return StartupScreen::setup;
     if (finished_) return StartupScreen::gauges;
     const uint32_t elapsed = nowMs - startedMs_;
     if (elapsed < animationCycleMs) return StartupScreen::splash;

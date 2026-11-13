@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks'
 type Diagnostics = { uptimeSeconds: number; freeHeapBytes: number; freePsramBytes: number; psramBytes: number; flashBytes: number; filesystemReady: boolean; filesystemUsedBytes: number; filesystemTotalBytes: number; journalReady: boolean; wifiConnected: boolean; wifiRssi: number | null; ipAddress: string | null }
 type Backup = { version: 1; timezone: string; alerts: { thresholdsEnabled: boolean; probeFaultEnabled: boolean; minimum: number; maximum: number; hysteresis: number; debounceSeconds: number; repeatSeconds: number }; temperatureCalibration: { offsetC: number; timestamp: number; calibrated: boolean } }
 type Monitoring = { temperature: boolean; ph: boolean; tds: boolean; phAvailable: boolean; tdsAvailable: boolean; storageError: boolean }
+type NetworkSetup = { active: boolean; available: boolean }
 
 function parseBackup(value: unknown): Backup {
   if (!value || typeof value !== 'object') throw new Error('Invalid configuration file')
@@ -48,12 +49,54 @@ function MonitoringSettings({ online }: { online: boolean }) {
   </form> : <p>{online ? 'Loading monitoring settings...' : 'Device offline'}</p>}{error && <p class="calibration-error" role="alert">{error}</p>}{notice && <p class="calibration-notice" role="status">{notice}</p>}</div>
 }
 
+function NetworkSettings({ online }: { online: boolean }) {
+  const [setup, setSetup] = useState<NetworkSetup | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (!online) { setSetup(null); return }
+    const controller = new AbortController()
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const load = async () => {
+      try {
+        const response = await fetch('/api/network/setup', { cache: 'no-store', signal: controller.signal })
+        if (!response.ok) throw new Error('Wi-Fi setup status unavailable')
+        const value = await response.json() as NetworkSetup
+        if (typeof value.active !== 'boolean' || typeof value.available !== 'boolean') throw new Error('Invalid Wi-Fi setup status')
+        if (active) { setSetup(value); setError('') }
+      } catch (reason) { if (active && !controller.signal.aborted) { setSetup(null); setError(reason instanceof Error ? reason.message : 'Wi-Fi setup status unavailable') } }
+      finally { if (active) timer = setTimeout(load, 5000) }
+    }
+    void load()
+    return () => { active = false; controller.abort(); clearTimeout(timer) }
+  }, [online])
+  const change = async (action: 'start' | 'cancel') => {
+    if (action === 'start' && !window.confirm('Open Wi-Fi setup? The current Wi-Fi remains saved until the new network connects.')) return
+    setBusy(true); setError('')
+    try {
+      const body = new URLSearchParams({ action, confirm: 'yes' })
+      const response = await fetch('/api/network/setup', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+      if (!response.ok) throw new Error(await response.text())
+      setSetup(await response.json() as NetworkSetup)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Wi-Fi setup could not be changed') }
+    finally { setBusy(false) }
+  }
+  return <div class="system-section"><h2>Network</h2><p>{online ? 'Wi-Fi connected' : 'Device offline'}</p>
+    <p>Wi-Fi credentials are not included in configuration backups.</p>
+    {setup?.active && <p role="status">Join the setup network shown on the center screen. Setup closes after five minutes if unused.</p>}
+    {setup && !setup.available && <p>Wi-Fi setup requires the center display.</p>}
+    <button class="notification-button" type="button" disabled={!online || !setup?.available || busy} onClick={() => void change(setup?.active ? 'cancel' : 'start')}>{setup?.active ? 'Cancel Wi-Fi setup' : 'Change Wi-Fi'}</button>
+    {error && <p class="calibration-error" role="alert">{error}</p>}
+  </div>
+}
+
 export function Settings({ timezone, pending, error, online, timezones, onTimezone, theme, onTheme }: { timezone: string; pending: string | null; error: boolean; online: boolean; timezones: string[]; onTimezone: (value: string) => void; theme: 'system' | 'light' | 'dark'; onTheme: (value: 'system' | 'light' | 'dark') => void }) {
   return <section><div class="history-heading"><div><div class="eyebrow">AQUARIUM / SETTINGS</div><h1>Settings</h1></div></div>
     <div class="system-section"><h2>Appearance</h2><div class="segment" role="group" aria-label="Appearance">{(['system', 'light', 'dark'] as const).map(value => <button type="button" class={theme === value ? 'selected' : ''} aria-pressed={theme === value} onClick={() => onTheme(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div></div>
     <div class="system-section"><h2>Device time</h2><label class="system-field">Timezone<select value={pending ?? timezone} disabled={!online || pending !== null} onChange={event => onTimezone(event.currentTarget.value)}>{timezones.map(zone => <option value={zone}>{zone.replaceAll('_', ' ')}</option>)}</select></label>{error && <p class="calibration-error" role="alert">Could not save timezone.</p>}</div>
     <MonitoringSettings online={online} />
-    <div class="system-section"><h2>Network</h2><p>{online ? 'Wi-Fi connected' : 'Device offline'}</p><p>Wi-Fi credentials are not included in configuration backups.</p></div>
+    <NetworkSettings online={online} />
     <div class="system-section"><h2>Measurements and storage</h2><p>Sensor availability depends on the active firmware and connections.</p><p>History is stored locally with fixed retention.</p></div>
   </section>
 }

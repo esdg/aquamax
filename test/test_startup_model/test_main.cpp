@@ -50,6 +50,24 @@ void test_first_setup_can_finish_early_and_time_wraps() {
     TEST_ASSERT_TRUE(startup.update(19000, false, true) == StartupScreen::gauges);
 }
 
+void test_setup_can_reappear_after_startup_and_connection_loss() {
+    StartupModel startup;
+    startup.begin(0, true);
+    TEST_ASSERT_TRUE(startup.update(1000, true, false, true, true) == StartupScreen::splash);
+    TEST_ASSERT_TRUE(startup.update(2000, true, false) == StartupScreen::gauges);
+    TEST_ASSERT_TRUE(startup.update(2100, true, false, true, true) == StartupScreen::setup);
+    TEST_ASSERT_TRUE(startup.update(2200, true, false, false, false) == StartupScreen::gauges);
+    TEST_ASSERT_TRUE(startup.update(2300, false, true, true, false) == StartupScreen::setup);
+    TEST_ASSERT_TRUE(startup.update(2400, true, false, true, false) == StartupScreen::gauges);
+}
+
+void test_saved_wifi_timeout_shows_available_setup() {
+    StartupModel startup;
+    startup.begin(0, true);
+    TEST_ASSERT_TRUE(startup.update(20000, false, true, true, false) == StartupScreen::setup);
+    TEST_ASSERT_TRUE(startup.update(21000, true, false, true, false) == StartupScreen::gauges);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_saved_wifi_starts_after_connection_and_logo_cycle);
@@ -57,5 +75,7 @@ int main() {
     RUN_TEST(test_saved_network_starts_offline_after_timeout);
     RUN_TEST(test_first_setup_waits_for_connection_even_after_timeout);
     RUN_TEST(test_first_setup_can_finish_early_and_time_wraps);
+    RUN_TEST(test_setup_can_reappear_after_startup_and_connection_loss);
+    RUN_TEST(test_saved_wifi_timeout_shows_available_setup);
     return UNITY_END();
 }

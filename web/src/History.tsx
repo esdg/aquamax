@@ -67,7 +67,7 @@ function Chart({ points, metric, timezone, events, compact }: { points: Point[];
   return <div class="history-plot" ref={container} role="img" aria-label={`${metric.label} history chart, minimum, average and maximum`} />
 }
 
-export function History({ timezone, compact = false }: { timezone: string; compact?: boolean }) {
+export function History({ timezone, compact = false, tdsUncalibrated = false, onCalibration }: { timezone: string; compact?: boolean; tdsUncalibrated?: boolean; onCalibration?: () => void }) {
   const [metric, setMetric] = useState<Metric>('temperature')
   const [range, setRange] = useState<Range>(compact ? '24h' : '1h')
   const [data, setData] = useState<Data | null>(null)
@@ -153,6 +153,7 @@ export function History({ timezone, compact = false }: { timezone: string; compa
       <div class="segment" role="group" aria-label="Time range">{ranges.map(item => <button type="button" class={range === item ? 'selected' : ''} aria-pressed={range === item} onClick={() => setRange(item)}>{item}</button>)}</div>
     </div>
     <div class="history-summary"><div><span>MINIMUM</span><strong>{format(minimum)}</strong></div><div><span>AVERAGE</span><strong>{format(average)}</strong></div><div><span>MAXIMUM</span><strong>{format(maximum)}</strong></div></div>
+    {metric === 'tds' && tdsUncalibrated && <p class="calibration-warning">TDS estimates are not saved to history. Calibrate TDS to start recording. {onCalibration && <button class="notification-button" type="button" onClick={onCalibration}>Calibrate TDS</button>}</p>}
     <div class="history-chart-area">
       {loading ? <p class="history-placeholder" role="status">Loading history...</p> : error ? <p class="history-placeholder" role="alert">{error}</p> : !data?.synchronized ? <p class="history-placeholder">Waiting for device time synchronization.</p> : !recorded.length ? <p class="history-placeholder">No {selected.label.toLowerCase()} readings in this range.</p> : <Chart points={data.points} metric={selected} timezone={timezone} events={visibleEvents} compact={compact} />}
     </div>

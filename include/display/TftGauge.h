@@ -17,6 +17,7 @@ bool beginTftGauges();
 void showTftSplash(uint32_t elapsedMs);
 void showTftSetup(const TftSetupInfo& setup);
 void updateTftGauges(const SensorSnapshot& snapshot, bool temperatureAlert, uint32_t nowMs);
+void updateTftSetupSideGauges(const SensorSnapshot& snapshot, bool temperatureAlert, uint32_t nowMs);
 
 }
 #endif

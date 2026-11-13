@@ -237,9 +237,8 @@ does not prove a screen is connected or showing a correct image.
 After the displays initialize, the center pH screen fades the white AquaMax
 logo in and out while the temperature and TDS screens stay black. After one
 logo cycle, the gauges appear as soon as Wi-Fi connects. Startup does not wait
-for any probes. If a previously saved network is offline, the gauges appear
-when the Wi-Fi connection attempt times out after 20 seconds, and the existing
-setup access point becomes available.
+for any probes. If a previously saved network is offline, the center screen
+shows setup credentials when the connection attempt times out after 20 seconds.
 
 When no Wi-Fi is saved, the center display instead shows the temporary setup
 network, password and portal URL after one logo cycle; the other displays stay
@@ -311,9 +310,9 @@ origins. Browsers generally do not consider `http://aquamax.local` secure, so
 installation, offline caching and browser notifications may be unavailable
 there. The device does not currently serve HTTPS. Where supported, only static
 dashboard assets are cached; live readings and API responses are never cached.
-The current Settings page does not yet configure device name, units, theme,
-display settings, external export or network credentials; Wi-Fi provisioning
-uses the setup access point described below.
+The current Settings page does not yet configure device name, units, display
+settings or external export. Wi-Fi provisioning uses the setup access point
+described below.
 
 For a first installation only, `uploadfs` can initialize the asset filesystem.
 **It replaces the entire LittleFS partition, including all history and other
@@ -357,6 +356,14 @@ network or a weak signal; `AUTH_FAIL` or `HANDSHAKE_TIMEOUT` can indicate a
 password or security mismatch. Try WPA2 on 2.4 GHz if your router is WPA3-only.
 The access-point password printed at startup is temporary and should not be
 shared when reporting logs.
+
+On a TFT-equipped device, Settings > Network > Change Wi-Fi opens the same
+setup access point and shows its temporary credentials on the center screen.
+The existing network remains saved until the replacement connects. An unused
+setup session can be cancelled from Settings and closes after five minutes;
+if a connection attempt fails, setup remains available for another try. When
+a saved network is unavailable, the setup access point starts automatically
+after the connection timeout and its credentials appear on the center screen.
 
 Wi-Fi credentials are stored in the ESP32's NVS and are not returned by the
 API or printed in the serial monitor. The temporary setup password is printed

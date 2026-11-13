@@ -29,6 +29,7 @@ namespace aquamax {
 namespace {
 constexpr uint32_t connectionTimeoutMs = 20000;
 constexpr uint32_t setupGraceMs = 60000;
+constexpr uint32_t manualSetupTimeoutMs = 300000;
 constexpr uint32_t submitIntervalMs = 5000;
 constexpr uint32_t responseGraceMs = 1000;
 constexpr uint32_t broadcastIntervalMs = 1000;
@@ -233,6 +234,8 @@ void DashboardPreview::begin() {
     server_.on("/api/events", HTTP_DELETE, [this] { deleteEvent(); });
     server_.on("/api/tips", HTTP_GET, [this] { serveTips(); });
     server_.on("/api/system", HTTP_GET, [this] { serveSystem(); });
+    server_.on("/api/network/setup", HTTP_GET, [this] { serveNetworkSetup(); });
+    server_.on("/api/network/setup", HTTP_POST, [this] { changeNetworkSetup(); });
     server_.on("/api/system/config", HTTP_GET, [this] { serveConfiguration(); });
     server_.on("/api/system/config", HTTP_POST, [this] { restoreConfiguration(); });
     server_.on("/api/system/reboot", HTTP_POST, [this] { reboot(); });
@@ -347,6 +350,68 @@ void DashboardPreview::startSetup() {
     Serial.printf("Setup Wi-Fi: %s\nSetup password: %s\nOpen http://aquamax.local/setup (or http://192.168.4.1/setup)\n", name, password);
 }
 
+void DashboardPreview::stopSetup() {
+    if (!setupActive_) return;
+    WiFi.scanDelete();
+    dns_.stop();
+    WiFi.softAPdisconnect(true);
+    setupActive_ = false;
+    manualSetup_.store(false);
+    setupToken_ = "";
+#if defined(AQUAMAX_TFT)
+    portENTER_CRITICAL(&setupDisplayMutex_);
+    setupDisplay_ = {};
+    portEXIT_CRITICAL(&setupDisplayMutex_);
+#endif
+}
+
+void DashboardPreview::serveNetworkSetup() {
+    server_.sendHeader("Cache-Control", "no-store");
+    String response = manualSetup_.load() ? F("{\"active\":true") : F("{\"active\":false");
+#if defined(AQUAMAX_TFT)
+    response += tftRendererReady_ ? F(",\"available\":true}") : F(",\"available\":false}");
+#else
+    response += F(",\"available\":false}");
+#endif
+    server_.send(200, "application/json", response);
+}
+
+void DashboardPreview::changeNetworkSetup() {
+    if (!allowedOrigin(server_.header("Origin")) || server_.arg("confirm") != "yes") {
+        server_.send(403, "text/plain", "Request rejected"); return;
+    }
+    const String action = server_.arg("action");
+    if (action != "start" && action != "cancel") { server_.send(400, "text/plain", "Invalid action"); return; }
+    if (WiFi.status() != WL_CONNECTED || !connected_ || connectQueued_ || attempting_ || rebootPending_) {
+        server_.send(409, "text/plain", "Wi-Fi connection is not ready"); return;
+    }
+    if (action == "cancel") {
+        if (!manualSetup_.load()) { server_.send(409, "text/plain", "No manual setup is active"); return; }
+        stopSetup();
+        serveNetworkSetup();
+        return;
+    }
+#if defined(AQUAMAX_TFT)
+    if (!tftRendererReady_) { server_.send(503, "text/plain", "Setup display unavailable"); return; }
+#else
+    server_.send(503, "text/plain", "Setup display unavailable"); return;
+#endif
+#if defined(AQUAMAX_PH_PROBE)
+    if (phCalibrationSession_.active()) { server_.send(409, "text/plain", "Finish pH calibration first"); return; }
+#endif
+#if defined(AQUAMAX_TDS_PROBE)
+    if (tdsCalibrationActive_) { server_.send(409, "text/plain", "Finish TDS calibration first"); return; }
+#endif
+    if (setupActive_ && !manualSetup_.load()) { server_.send(409, "text/plain", "Wi-Fi setup is already in progress"); return; }
+    setupFailed_ = false;
+    lastDisconnectReason_ = 0;
+    startSetup();
+    if (!setupActive_) { server_.send(503, "text/plain", "Wi-Fi setup could not start"); return; }
+    manualSetupStarted_ = millis();
+    manualSetup_.store(true);
+    serveNetworkSetup();
+}
+
 bool DashboardPreview::onSetupNetwork() {
     return setupActive_ && server_.client().localIP() == WiFi.softAPIP();
 }
@@ -399,9 +464,9 @@ void DashboardPreview::serveSetupStatus() {
         return;
     }
     String response = F("{\"state\":\"");
-    response += connected_ ? "connected" : connectQueued_ || attempting_ ? "connecting" : setupFailed_ ? "failed" : "idle";
+    response += connectQueued_ || attempting_ ? "connecting" : setupFailed_ ? "failed" : connected_ && !manualSetup_.load() ? "connected" : "idle";
     response += F("\",\"ip\":\"");
-    if (connected_) response += WiFi.localIP().toString();
+    if (connected_ && !manualSetup_.load() && !connectQueued_ && !attempting_ && !setupFailed_) response += WiFi.localIP().toString();
     response += F("\",\"reason\":");
     response += String(setupFailed_ ? lastDisconnectReason_ : 0);
     response += '}';
@@ -1333,15 +1398,17 @@ void DashboardPreview::update(uint32_t now) {
     const SensorSnapshot snapshot = snapshot_;
     portEXIT_CRITICAL(&snapshotMutex_);
 #if defined(AQUAMAX_TFT)
-    const StartupScreen screen = startup_.update(now, displayWifiConnected_.load(), displayWifiTimedOut_.load());
+    TftSetupInfo setup;
+    portENTER_CRITICAL(&setupDisplayMutex_);
+    setup = setupDisplay_;
+    portEXIT_CRITICAL(&setupDisplayMutex_);
+    const StartupScreen screen = startup_.update(now, displayWifiConnected_.load(), displayWifiTimedOut_.load(),
+                                                  setup.active || setup.failed, manualSetup_.load());
     if (screen == StartupScreen::splash) {
         showTftSplash(now - startupStartedMs_);
     } else if (screen == StartupScreen::setup) {
-        TftSetupInfo setup;
-        portENTER_CRITICAL(&setupDisplayMutex_);
-        setup = setupDisplay_;
-        portEXIT_CRITICAL(&setupDisplayMutex_);
         showTftSetup(setup);
+        updateTftSetupSideGauges(snapshot, displayTemperatureAlert_.load(), millis());
     } else {
         updateTftGauges(snapshot, displayTemperatureAlert_.load(), millis());
     }
@@ -1725,6 +1792,7 @@ void DashboardPreview::updateNetwork(uint32_t now) {
         connectedSince_ = now;
         attempting_ = false;
         if (pendingSsid_.length()) {
+            manualSetup_.store(false);
             WifiCredentials credentials{};
             pendingSsid_.toCharArray(credentials.ssid, sizeof(credentials.ssid));
             pendingPassword_.toCharArray(credentials.password, sizeof(credentials.password));
@@ -1767,18 +1835,8 @@ void DashboardPreview::updateNetwork(uint32_t now) {
                       static_cast<int>(timeoutStatus), lastDisconnectReason_);
         startSetup();
     }
-    if (online && setupActive_ && now - connectedSince_ >= setupGraceMs) {
-        WiFi.scanDelete();
-        dns_.stop();
-        WiFi.softAPdisconnect(true);
-        setupActive_ = false;
-        setupToken_ = "";
-    #if defined(AQUAMAX_TFT)
-        portENTER_CRITICAL(&setupDisplayMutex_);
-        setupDisplay_ = {};
-        portEXIT_CRITICAL(&setupDisplayMutex_);
-    #endif
-    }
+    if (manualSetup_.load() && online && !connectQueued_ && !attempting_ && now - manualSetupStarted_ >= manualSetupTimeoutMs) manualSetup_.store(false);
+    if (online && setupActive_ && !manualSetup_.load() && !connectQueued_ && now - connectedSince_ >= setupGraceMs) stopSetup();
 }
 
 } // namespace aquamax
