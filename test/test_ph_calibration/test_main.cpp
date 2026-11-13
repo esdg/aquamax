@@ -117,6 +117,20 @@ void test_uncalibrated_and_disabled_channel_never_publish_ph() {
     TEST_ASSERT_FALSE(disabled.hasValue);
 }
 
+void test_valid_ph_signal_waits_for_connection_debounce() {
+    aquamax::PhChannel channel;
+    const aquamax::PhCalibration calibration {true, -0.2f, 3.9f, -0.2f};
+    const auto first = channel.update(1.5f, {}, calibration, true);
+    const auto second = channel.update(1.5f, {}, calibration, true);
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::waiting), static_cast<int>(first.state));
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::waiting), static_cast<int>(second.state));
+    TEST_ASSERT_FALSE(first.hasValue);
+    TEST_ASSERT_FALSE(second.hasValue);
+    const auto connected = channel.update(1.5f, {}, calibration, true);
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::ProbeState::connected), static_cast<int>(connected.state));
+    TEST_ASSERT_TRUE(connected.hasValue);
+}
+
 void test_equal_resistor_divider_and_stability_reset() {
     aquamax::PhVoltageLimits limits;
     limits.dividerRatio = 0.5f;
@@ -220,6 +234,7 @@ int main() {
     RUN_TEST(test_store_preserves_first_baseline_and_rejects_failures);
     RUN_TEST(test_fault_hides_value_before_debounce_and_recovers);
     RUN_TEST(test_uncalibrated_and_disabled_channel_never_publish_ph);
+    RUN_TEST(test_valid_ph_signal_waits_for_connection_debounce);
     RUN_TEST(test_equal_resistor_divider_and_stability_reset);
     RUN_TEST(test_calibration_session_requires_distinct_valid_points_and_can_cancel);
     RUN_TEST(test_temperature_compensation_and_explicit_fallback);

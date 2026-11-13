@@ -38,6 +38,7 @@ void test_errors_timeout_and_recovery() {
     TEST_ASSERT_EQUAL_INT16(42, raw);
     wire.shortRead = false;
     TEST_ASSERT_TRUE(adc.start(0, 10));
+    wire.configuration &= 0x7fffu;
     TEST_ASSERT_EQUAL(static_cast<int>(aquamax::AdcResult::error), static_cast<int>(adc.poll(110, raw)));
     TEST_ASSERT_TRUE(adc.start(0, 111));
     wire.conversion = 24000;
@@ -45,9 +46,20 @@ void test_errors_timeout_and_recovery() {
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.0f, aquamax::adsRawToVolts(raw));
 }
 
+void test_late_poll_accepts_completed_conversion() {
+    TwoWire wire;
+    aquamax::Ads1115 adc(wire);
+    int16_t raw = 0;
+    TEST_ASSERT_TRUE(adc.start(1, 100));
+    wire.conversion = 12000;
+    TEST_ASSERT_EQUAL(static_cast<int>(aquamax::AdcResult::ready), static_cast<int>(adc.poll(350, raw)));
+    TEST_ASSERT_EQUAL_INT16(12000, raw);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_single_shot_timing_and_signed_conversion);
     RUN_TEST(test_errors_timeout_and_recovery);
+    RUN_TEST(test_late_poll_accepts_completed_conversion);
     return UNITY_END();
 }

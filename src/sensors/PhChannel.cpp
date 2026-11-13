@@ -37,6 +37,7 @@ PhReading PhChannel::update(float adcVolts, const PhVoltageLimits& limits,
         return reading;
     }
     reading.state = state_.update(ProbeState::connected);
+    if (reading.state == ProbeState::disconnected) reading.state = ProbeState::waiting;
     if (!reading.calibrationRequired && reading.state == ProbeState::connected) {
         reading.hasValue = true;
         reading.ph = ph;

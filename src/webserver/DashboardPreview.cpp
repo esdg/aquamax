@@ -1343,7 +1343,7 @@ void DashboardPreview::update(uint32_t now) {
         portEXIT_CRITICAL(&setupDisplayMutex_);
         showTftSetup(setup);
     } else {
-        updateTftGauges(snapshot, displayTemperatureAlert_.load(), now);
+        updateTftGauges(snapshot, displayTemperatureAlert_.load(), millis());
     }
 #endif
     if (now - lastSensorReportMs_ >= 5000) {
@@ -1546,7 +1546,8 @@ void DashboardPreview::updateTdsProbe(uint32_t now) {
         portENTER_CRITICAL(&snapshotMutex_);
         snapshot = snapshot_;
         portEXIT_CRITICAL(&snapshotMutex_);
-        const bool tempFresh = snapshot.temperature.hasValue && now - snapshot.temperature.lastSeenMs < 3000 &&
+        const uint32_t temperatureNowMs = millis();
+        const bool tempFresh = snapshot.temperature.hasValue && temperatureNowMs - snapshot.temperature.lastSeenMs < 3000 &&
                                snapshot.temperature.valueC >= -5.0f && snapshot.temperature.valueC <= 60.0f;
         CompensationTemperature temperature;
         resolveCompensationTemperature(tempFresh, snapshot.temperature.valueC, 25.0f, temperature);

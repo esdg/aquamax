@@ -42,16 +42,16 @@ AdcResult Ads1115::poll(uint32_t nowMs, int16_t& raw) {
     if (!pending_) return AdcResult::idle;
     const uint32_t elapsed = nowMs - startedMs_;
     if (elapsed < conversionWaitMs) return AdcResult::pending;
-    if (elapsed >= conversionTimeoutMs) {
-        pending_ = false;
-        return AdcResult::error;
-    }
     uint16_t config = 0;
     if (!readRegister(configurationRegister, config)) {
         pending_ = false;
         return AdcResult::error;
     }
-    if ((config & 0x8000u) == 0) return AdcResult::pending;
+    if ((config & 0x8000u) == 0) {
+        if (elapsed < conversionTimeoutMs) return AdcResult::pending;
+        pending_ = false;
+        return AdcResult::error;
+    }
     uint16_t value = 0;
     pending_ = false;
     if (!readRegister(conversionRegister, value)) return AdcResult::error;
